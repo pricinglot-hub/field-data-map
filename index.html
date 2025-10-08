@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Field Data Monitor</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        .info-panel { position: absolute; top: 10px; right: 10px; z-index: 1000; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="info-panel">
+        <strong>Live Field Map</strong>
+        <div id="status">Loading data...</div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec'; // Paste the SAME URL here
+        const REFRESH_INTERVAL_MS = 30000; // Refresh every 30 seconds
+        // --- END CONFIGURATION ---
+
+        const map = L.map('map').setView([40.7128, -74.0060], 10); // Default view (e.g., NYC)
+        let pointsLayer = null;
+        const statusDiv = document.getElementById('status');
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        async function fetchData() {
+            try {
+                statusDiv.textContent = 'Fetching new data...';
+                const response = await fetch(WEB_APP_URL);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+
+                if (pointsLayer) {
+                    map.removeLayer(pointsLayer); // Clear old points
+                }
+
+                pointsLayer = L.geoJSON(data, {
+                    onEachFeature: function (feature, layer) {
+                        // Create a popup for each point
+                        const props = feature.properties;
+                        layer.bindPopup(`<b>Timestamp:</b> ${props.timestamp}`);
+                    }
+                }).addTo(map);
+                
+                // If there are points, fit the map to their bounds
+                if (data.features.length > 0) {
+                    map.fitBounds(pointsLayer.getBounds().pad(0.1));
+                }
+
+                statusDiv.textContent = `Updated: ${new Date().toLocaleTimeString()} (${data.features.length} points)`;
+            } catch (error) {
+                console.error('Failed to fetch map data:', error);
+                statusDiv.textContent = 'Error loading data.';
+            }
+        }
+
+        // Fetch data immediately and then set an interval to refresh
+        fetchData();
+        setInterval(fetchData, REFRESH_INTERVAL_MS);
+    </script>
+</body>
+</html>
