@@ -55,18 +55,13 @@
         .timeline input[type="range"] { width: 240px; }
         .timeline .time-label { font-size: 12px; color: #333; min-width: 100px; text-align: right; }
 
-        /* Dots used inside clusters */
-        .dot { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 8px rgba(168, 85, 247, 0.35); }
-
-        /* Purple cluster look */
         .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large { background: rgba(168,85,247,0.25); }
         .marker-cluster div {
             background: var(--purple); color: #fff; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.25);
         }
 
-        /* Mobile responsiveness */
         @media (max-width: 768px) {
-            .info-panel { right: 10px; left: 10px; min-width: 0; }
+            .info-panel { right: 10px; left: 10px; min-width: 0; top: 70px; }
             .control-panel { left: 10px; right: 10px; }
             .timeline {
                 bottom: 10px; width: calc(100% - 20px); min-width: 0;
@@ -79,8 +74,6 @@
 </head>
 <body>
     <div id="map"></div>
-
-    <!-- Mini dashboard -->
     <div class="info-panel">
         <strong>Live Field Map</strong>
         <div id="status">Loading data...</div>
@@ -89,8 +82,6 @@
             <div class="row"><div class="label">Today</div><div class="value" id="countToday">0</div></div>
         </div>
     </div>
-
-    <!-- Filters -->
     <div class="control-panel">
         <div class="row">
             <label for="preset">Date Range:</label>
@@ -105,396 +96,277 @@
             <button id="applyRange" disabled>Apply</button>
         </div>
     </div>
-
-    <!-- Time slider -->
     <div class="timeline">
         <button id="playPause">Play</button>
         <input type="range" id="timeSlider" min="0" max="100" value="100" step="1" />
         <div class="time-label" id="timeLabel">--</div>
     </div>
 
-    <script>
-        // --- CONFIGURATION ---
-        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec';
-        const REFRESH_INTERVAL_MS = 60000;
-        const CLUSTER_UNTIL_ZOOM = 5;  // cluster at low zoom
-        const COUNTY_ZOOM_MAX = 6;     // show counties at US-level zoom
-        const HARD_LIMIT = 20000;      // safety cap
-        // --- END CONFIGURATION ---
+<script>
+    // --- CONFIGURATION ---
+    const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec';
+    const REFRESH_INTERVAL_MS = 60000;
+    const CLUSTER_UNTIL_ZOOM = 5;
+    const COUNTY_ZOOM_MAX = 6;
+    const HARD_LIMIT = 20000;
+    // --- END CONFIGURATION ---
 
-        // Basemaps (default: Light)
-        const plainWhite = L.gridLayer({ attribution: '' });
-        plainWhite.createTile = function() {
-            const tile = document.createElement('canvas'); tile.width = 256; tile.height = 256;
-            const ctx = tile.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, 256, 256); return tile;
-        };
-        const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' });
-        const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' });
-        const dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' });
-        const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles © Esri — sources: Esri, USGS, USDA, etc.' });
-        const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: '© OpenTopoMap (CC-BY-SA), © OpenStreetMap' });
+    const map = L.map('map', { center: [40.0, -96.0], zoom: 4, preferCanvas: true });
+    
+    // Basemaps
+    const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' }).addTo(map);
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' });
+    const dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' });
+    const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles © Esri' });
+    const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: '© OpenTopoMap' });
 
-        const map = L.map('map', {
-            center: [40.0, -96.0],
-            zoom: 4,
-            preferCanvas: true,
-            layers: [cartoLight] // default Light (Carto)
-        });
-        const baseMaps = {
-            "Light (Carto)": cartoLight,
-            "Street (OSM)": osm,
-            "Plain White": plainWhite,
-            "Dark (Carto)": dark,
-            "Satellite (Esri)": satellite,
-            "Topo (OpenTopoMap)": topo
-        };
-        L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
+    const baseMaps = { "Light": cartoLight, "Street": osm, "Dark": dark, "Satellite": satellite, "Topo": topo };
+    L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
 
-        // UI
-        const statusDiv = document.getElementById('status');
-        const countHourEl = document.getElementById('countHour');
-        const countTodayEl = document.getElementById('countToday');
-        const presetSel = document.getElementById('preset');
-        const startDateInput = document.getElementById('startDate');
-        const endDateInput = document.getElementById('endDate');
-        const applyRangeBtn = document.getElementById('applyRange');
-        const timeSlider = document.getElementById('timeSlider');
-        const timeLabel = document.getElementById('timeLabel');
-        const playPauseBtn = document.getElementById('playPause');
+    const statusDiv = document.getElementById('status');
+    const countHourEl = document.getElementById('countHour');
+    const countTodayEl = document.getElementById('countToday');
+    const presetSel = document.getElementById('preset');
+    const startDateInput = document.getElementById('startDate');
+    const endDateInput = document.getElementById('endDate');
+    const applyRangeBtn = document.getElementById('applyRange');
+    const timeSlider = document.getElementById('timeSlider');
+    const timeLabel = document.getElementById('timeLabel');
+    const playPauseBtn = document.getElementById('playPause');
 
-        // Data state
-        let allFeatures = [];      // all from server, with _ts
-        let filteredFeatures = []; // after date-range filter
-        let currentTimeMs = 0;
-        let rangeStartMs = 0;
-        let rangeEndMs = 0;
-        let isPlaying = false;
+    let allFeatures = [];
+    let filteredFeatures = [];
+    let currentTimeMs = 0;
+    let rangeStartMs = 0;
+    let rangeEndMs = 0;
+    let isPlaying = false;
+    let playTimer = null;
 
-        // Layers
-        let dotsLayer = null;
-        let clusterLayer = null;
-        let usingCluster = false; // keep a single declaration
-        let countiesLayer = null;
-        let countiesLoaded = false;
+    // --- FIX: Single, correct declarations for all layers ---
+    let mainLayer = null; // This will hold the MarkerClusterGroup or GeoJSON layer
+    let countiesLayer = null;
+    let countiesLoaded = false;
 
-        // Helpers -------------------------------------------------------------
-        function startOfTodayMs() { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); }
-        function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+    function startOfTodayMs() { var d = new Date(); d.setHours(0,0,0,0); return d.getTime(); }
+    function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 
-        // Robust timestamp parser (ISO, dd/mm/yyyy HH:MM:SS, numeric epochs)
-        function parseTimestamp(v) {
-            if (v == null) return NaN;
-            if (typeof v === 'number' && isFinite(v)) {
-                if (v > 1e12) return v;       // ms
-                if (v > 1e9) return v * 1000; // s -> ms
-                return NaN;
+    function parseTimestamp(v) {
+        if (v == null) return NaN;
+        if (typeof v === 'number' && isFinite(v)) return v > 1e12 ? v : v * 1000;
+        if (v instanceof Date) return v.getTime();
+        if (typeof v === 'string') {
+            var s = v.trim();
+            if (/^\d{4}-\d{2}-\d{2}T/.test(s) || s.endsWith('Z')) {
+                var t = Date.parse(s); if (!isNaN(t)) return t;
             }
-            if (v instanceof Date) return v.getTime();
-            if (typeof v === 'string') {
-                const s = v.trim();
-                // ISO
-                if (/^\d{4}-\d{2}-\d{2}T/.test(s) || s.endsWith('Z')) {
-                    const t = Date.parse(s);
-                    if (!isNaN(t)) return t;
-                }
-                // dd/mm/yyyy HH:MM[:SS]
-                const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-                if (m) {
-                    const d = parseInt(m[1],10), mo = parseInt(m[2],10)-1, y = parseInt(m[3],10);
-                    const hh = parseInt(m[4]||'0',10), mi = parseInt(m[5]||'0',10), ss = parseInt(m[6]||'0',10);
-                    return new Date(y, mo, d, hh, mi, ss).getTime();
-                }
-                // Fallback
-                const t2 = Date.parse(s);
-                if (!isNaN(t2)) return t2;
+            var m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+            if (m) {
+                var d = parseInt(m[1], 10), mo = parseInt(m[2], 10) - 1, y = parseInt(m[3], 10);
+                var hh = parseInt(m[4] || '0', 10), mi = parseInt(m[5] || '0', 10), ss = parseInt(m[6] || '0', 10);
+                return new Date(y, mo, d, hh, mi, ss).getTime();
             }
-            return NaN;
+            var t2 = Date.parse(s); if (!isNaN(t2)) return t2;
         }
+        return NaN;
+    }
 
-        // Purple hue; vary lightness with recency (comma syntax for broad support)
-        function colorForRecency(ts, minTs, maxTs) {
-            const span = Math.max(1, maxTs - minTs);
-            const ratio = clamp((ts - minTs) / span, 0, 1); // 0 old -> 1 new
-            const hue = 270;  // purple
-            const sat = 85;
-            const light = 85 - Math.round(40 * ratio); // 85% old -> 45% new
-            return 'hsl(' + hue + ', ' + sat + '%, ' + light + '%)';
-        }
+    function colorForRecency(ts, minTs, maxTs) {
+        var span = Math.max(1, maxTs - minTs);
+        var ratio = clamp((ts - minTs) / span, 0, 1);
+        var hue = 270, sat = 85, light = 85 - Math.round(40 * ratio);
+        return 'hsl(' + hue + ', ' + sat + '%, ' + light + '%)';
+    }
 
-        function featuresFromServer(data) {
-            let feats = (data && data.features && Array.isArray(data.features)) ? data.features : [];
-            feats = feats.map(function(f) {
-                const props = f.properties || {};
-                const rawTs = (props.ts !== undefined && props.ts !== null) ? props.ts
-                             : (props.tsMs !== undefined && props.tsMs !== null) ? props.tsMs
-                             : props.timestamp;
-                const tsMs = parseTimestamp(rawTs);
-                if (!isFinite(tsMs)) return null;
-                // Avoid object spread for compatibility
-                f.properties = Object.assign({}, props, { _ts: tsMs });
-                return f;
-            }).filter(function(x){ return x; });
-            feats.sort(function(a,b){ return a.properties._ts - b.properties._ts; });
-            return feats.slice(-HARD_LIMIT);
-        }
+    function processServerData(data) {
+        var feats = (data && data.features && Array.isArray(data.features)) ? data.features : [];
+        allFeatures = feats.map(function(f) {
+            if (!f || !f.properties || !f.geometry || !f.geometry.coordinates) return null; // Safety check
+            var props = f.properties;
+            var rawTs = (props.ts !== undefined) ? props.ts : (props.tsMs !== undefined) ? props.tsMs : props.timestamp;
+            var tsMs = parseTimestamp(rawTs);
+            if (!isFinite(tsMs)) return null;
+            f.properties._ts = tsMs;
+            return f;
+        }).filter(function(x) { return x; });
+        allFeatures.sort(function(a, b) { return a.properties._ts - b.properties._ts; });
+        allFeatures = allFeatures.slice(-HARD_LIMIT);
+    }
 
-        function updateDashboard(features) {
-            const now = Date.now();
-            const lastHour = now - 3600 * 1000;
-            const todayStart = startOfTodayMs();
-            const hourCount = features.filter(f => f.properties._ts >= lastHour).length;
-            const todayCount = features.filter(f => f.properties._ts >= todayStart).length;
-            countHourEl.textContent = hourCount.toLocaleString();
-            countTodayEl.textContent = todayCount.toLocaleString();
-        }
-
-        function setupTimeSlider() {
-            if (!filteredFeatures.length) {
-                timeSlider.min = 0; timeSlider.max = 1; timeSlider.value = 1; timeLabel.textContent = '--';
-                return;
-            }
-            const minTs = filteredFeatures[0].properties._ts;
-            const maxTs = filteredFeatures[filteredFeatures.length-1].properties._ts;
-            const span = Math.max(1, maxTs - minTs);
-            const step = Math.max(60000, Math.floor(span / 200)); // >= 1 minute
-            timeSlider.min = String(minTs);
-            timeSlider.max = String(maxTs);
-            timeSlider.step = String(step);
-            timeSlider.value = String(maxTs);
-            currentTimeMs = maxTs;
-            timeLabel.textContent = new Date(currentTimeMs).toLocaleString();
-        }
-
-        function applyDateFilter() {
-            const now = Date.now();
-            if (!allFeatures.length) {
-                filteredFeatures = [];
-                updateDashboard(filteredFeatures);
-                setupTimeSlider();
-                renderAtTime(now, { force: true });
-                return;
-            }
-
-            const preset = presetSel.value;
+    function applyDateFilter() {
+        var now = Date.now();
+        if (!allFeatures.length) {
+            filteredFeatures = [];
+        } else {
+            var preset = presetSel.value;
             if (preset === 'today') {
-                rangeStartMs = startOfTodayMs();
-                rangeEndMs = now;
+                rangeStartMs = startOfTodayMs(); rangeEndMs = now;
             } else if (preset === 'last2') {
-                rangeStartMs = now - 2 * 24 * 3600 * 1000;
-                rangeEndMs = now;
+                rangeStartMs = now - 2 * 24 * 3600 * 1000; rangeEndMs = now;
             } else if (preset === 'custom') {
-                const s = startDateInput.value ? new Date(startDateInput.value + 'T00:00:00').getTime() : null;
-                const e = endDateInput.value ? new Date(endDateInput.value + 'T23:59:59').getTime() : null;
-                const minTs = allFeatures[0].properties._ts;
-                const maxTs = allFeatures[allFeatures.length-1].properties._ts;
+                var s = startDateInput.value ? new Date(startDateInput.value + 'T00:00:00').getTime() : null;
+                var e = endDateInput.value ? new Date(endDateInput.value + 'T23:59:59').getTime() : null;
+                var minTs = allFeatures[0].properties._ts, maxTs = allFeatures[allFeatures.length-1].properties._ts;
                 rangeStartMs = (s !== null) ? s : minTs;
                 rangeEndMs = (e !== null) ? e : maxTs;
             } else { // 'all'
                 rangeStartMs = allFeatures[0].properties._ts;
-                rangeEndMs = allFeatures[allFeatures.length-1].properties._ts;
+                rangeEndMs = allFeatures[allFeatures.length - 1].properties._ts;
             }
-
-            filteredFeatures = allFeatures.filter(f => f.properties._ts >= rangeStartMs && f.properties._ts <= rangeEndMs);
-            updateDashboard(filteredFeatures);
-            setupTimeSlider();
-            renderAtTime(rangeEndMs, { force: true });
-        }
-
-        function buildDotsLayer(visible) {
-            if (dotsLayer) { map.removeLayer(dotsLayer); dotsLayer = null; }
-            const minTs = rangeStartMs, maxTs = currentTimeMs || rangeEndMs;
-            dotsLayer = L.geoJSON({ type: 'FeatureCollection', features: visible }, {
-                pointToLayer: (feature, latlng) => {
-                    const c = colorForRecency(feature.properties._ts, minTs, maxTs);
-                    return L.circleMarker(latlng, {
-                        radius: 6, stroke: false, fillColor: c, fillOpacity: 0.9,
-                        renderer: L.canvas({ padding: 0.5 })
-                    });
-                },
-                onEachFeature: (feature, layer) => {
-                    const ts = new Date(feature.properties._ts).toLocaleString();
-                    layer.bindPopup(`<b>Timestamp:</b> ${ts}`);
-                }
-            }).addTo(map);
-        }
-
-        function buildClusterLayer(visible) {
-            if (clusterLayer) { map.removeLayer(clusterLayer); clusterLayer = null; }
-            clusterLayer = L.markerClusterGroup({
-                showCoverageOnHover: false,
-                spiderfyOnMaxZoom: true,
-                maxClusterRadius: 60,
-                disableClusteringAtZoom: CLUSTER_UNTIL_ZOOM + 1,
-                iconCreateFunction: (cluster) => {
-                    const count = cluster.getChildCount();
-                    let size = 'small';
-                    if (count >= 100) size = 'large';
-                    else if (count >= 20) size = 'medium';
-                    return new L.DivIcon({
-                        html: `<div><span>${count}</span></div>`,
-                        className: 'marker-cluster marker-cluster-' + size,
-                        iconSize: new L.Point(40, 40)
-                    });
-                }
+            filteredFeatures = allFeatures.filter(function(f) {
+                return f.properties._ts >= rangeStartMs && f.properties._ts <= rangeEndMs;
             });
+        }
+        updateDashboard(filteredFeatures);
+        setupTimeSlider();
+        renderAtTime(rangeEndMs);
+    }
 
-            const minTs = rangeStartMs, maxTs = currentTimeMs || rangeEndMs;
-            visible.forEach(f => {
-                const coords = f.geometry && f.geometry.coordinates ? f.geometry.coordinates : null;
-                if (!coords || coords.length < 2) return;
-                const lon = Number(coords[0]), lat = Number(coords[1]);
-                if (!isFinite(lat) || !isFinite(lon)) return;
+    // --- REFACTOR: Simplified and robust rendering logic ---
+    function renderAtTime(tMs) {
+        currentTimeMs = tMs;
+        timeLabel.textContent = new Date(currentTimeMs).toLocaleString();
 
-                const c = colorForRecency(f.properties._ts, minTs, maxTs);
-                const icon = L.divIcon({ className: '', html: `<div class="dot" style="background:${c};"></div>`, iconSize: [10,10] });
-                const m = L.marker([lat, lon], { icon });
-                const ts = new Date(f.properties._ts).toLocaleString();
-                m.bindPopup(`<b>Timestamp:</b> ${ts}`);
-                clusterLayer.addLayer(m);
-            });
+        var visibleFeatures = filteredFeatures.filter(function(f) {
+            return f.properties._ts <= currentTimeMs;
+        });
 
-            clusterLayer.addTo(map);
+        if (mainLayer) { map.removeLayer(mainLayer); }
+
+        if (visibleFeatures.length === 0) {
+            statusDiv.textContent = 'No data in selected range.';
+            return;
         }
 
-        function renderAtTime(tMs, opts) {
-            opts = opts || {};
-            const zoom = map.getZoom();
+        var minTs = rangeStartMs;
+        var maxTs = currentTimeMs || rangeEndMs;
+        
+        // Always use MarkerClusterGroup. It will show individual markers when zoomed in.
+        mainLayer = L.markerClusterGroup({
+            disableClusteringAtZoom: CLUSTER_UNTIL_ZOOM + 1,
+            chunkedLoading: true,
+            maxClusterRadius: 60,
+        });
 
-            if (!filteredFeatures.length) {
-                if (dotsLayer) { map.removeLayer(dotsLayer); dotsLayer = null; }
-                if (clusterLayer) { map.removeLayer(clusterLayer); clusterLayer = null; }
-                statusDiv.textContent = 'No data in selected range.';
-                return;
+        var geoJsonLayer = L.geoJSON({ type: 'FeatureCollection', features: visibleFeatures }, {
+            pointToLayer: function(feature, latlng) {
+                var c = colorForRecency(feature.properties._ts, minTs, maxTs);
+                return L.circleMarker(latlng, {
+                    radius: 6, stroke: false, fillColor: c, fillOpacity: 0.9
+                });
+            },
+            onEachFeature: function(feature, layer) {
+                var ts = new Date(feature.properties._ts).toLocaleString();
+                layer.bindPopup('<b>Timestamp:</b> ' + ts);
             }
+        });
+        
+        mainLayer.addLayer(geoJsonLayer);
+        map.addLayer(mainLayer);
 
-            currentTimeMs = tMs;
-            timeLabel.textContent = new Date(currentTimeMs).toLocaleString();
+        statusDiv.textContent = 'Updated: ' + new Date().toLocaleTimeString() + ' (' + visibleFeatures.length.toLocaleString() + ' points)';
+    }
 
-            const visible = filteredFeatures.filter(f => f.properties._ts <= currentTimeMs);
-            const shouldCluster = !isPlaying && zoom <= CLUSTER_UNTIL_ZOOM;
+    function updateDashboard(features) {
+        var now = Date.now(), lastHour = now - 3600 * 1000, todayStart = startOfTodayMs();
+        var hourCount = features.filter(function(f) { return f.properties._ts >= lastHour; }).length;
+        var todayCount = features.filter(function(f) { return f.properties._ts >= todayStart; }).length;
+        countHourEl.textContent = hourCount.toLocaleString();
+        countTodayEl.textContent = todayCount.toLocaleString();
+    }
 
-            if (shouldCluster !== usingCluster || opts.force) {
-                if (dotsLayer) { map.removeLayer(dotsLayer); dotsLayer = null; }
-                if (clusterLayer) { map.removeLayer(clusterLayer); clusterLayer = null; }
-                if (shouldCluster) buildClusterLayer(visible); else buildDotsLayer(visible);
-                usingCluster = shouldCluster;
-            } else {
-                if (usingCluster) buildClusterLayer(visible); else buildDotsLayer(visible);
-            }
-
-            statusDiv.textContent = `Updated: ${new Date().toLocaleTimeString()} (${visible.length.toLocaleString()} points)`;
+    function setupTimeSlider() {
+        if (!filteredFeatures.length) {
+            timeSlider.min = 0; timeSlider.max = 1; timeSlider.value = 1; timeLabel.textContent = '--';
+            return;
         }
-
-        // Lazy counties -------------------------------------------------------
-        let countiesLayer = null;
-        let countiesLoaded = false;
-        async function ensureCountiesLoaded() {
-            if (countiesLoaded) return;
-            try {
-                const response = await fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json');
-                const countiesData = await response.json();
+        var minTs = filteredFeatures[0].properties._ts;
+        var maxTs = filteredFeatures[filteredFeatures.length - 1].properties._ts;
+        var span = Math.max(1, maxTs - minTs);
+        var step = Math.max(60000, Math.floor(span / 200));
+        timeSlider.min = String(minTs);
+        timeSlider.max = String(maxTs);
+        timeSlider.step = String(step);
+        timeSlider.value = String(maxTs);
+    }
+    
+    function ensureCountiesLoaded() {
+        if (countiesLoaded) return Promise.resolve();
+        return fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json')
+            .then(function(response) { return response.json(); })
+            .then(function(countiesData) {
                 countiesLayer = L.geoJSON(countiesData, {
                     style: { color: "#888", weight: 1, opacity: 0.65, fillOpacity: 0 },
                     interactive: false
                 });
                 countiesLoaded = true;
-            } catch (e) {
-                console.error('Could not load county boundaries:', e);
-            }
-        }
+            }).catch(function(e) { console.error('Could not load county boundaries:', e); });
+    }
 
-        async function handleCountyVisibility() {
-            const z = map.getZoom();
-            if (z <= COUNTY_ZOOM_MAX) {
-                await ensureCountiesLoaded();
+    function handleCountyVisibility() {
+        if (map.getZoom() <= COUNTY_ZOOM_MAX) {
+            ensureCountiesLoaded().then(function() {
                 if (countiesLayer && !map.hasLayer(countiesLayer)) countiesLayer.addTo(map);
-            } else {
-                if (countiesLayer && map.hasLayer(countiesLayer)) map.removeLayer(countiesLayer);
+            });
+        } else {
+            if (countiesLayer && map.hasLayer(countiesLayer)) map.removeLayer(countiesLayer);
+        }
+    }
+
+    map.on('zoomend', handleCountyVisibility);
+    presetSel.addEventListener('change', function() {
+        var isCustom = presetSel.value === 'custom';
+        startDateInput.disabled = !isCustom; endDateInput.disabled = !isCustom; applyRangeBtn.disabled = !isCustom;
+        if (!isCustom) applyDateFilter();
+    });
+    applyRangeBtn.addEventListener('click', applyDateFilter);
+    timeSlider.addEventListener('input', function() { renderAtTime(Number(timeSlider.value)); });
+    playPauseBtn.addEventListener('click', function() { isPlaying ? pause() : play(); });
+
+    function play() {
+        if (isPlaying) return;
+        isPlaying = true; playPauseBtn.textContent = 'Pause';
+        var minTs = Number(timeSlider.min), maxTs = Number(timeSlider.max);
+        var cur = Number(timeSlider.value) >= maxTs ? minTs : Number(timeSlider.value);
+        var step = Math.max(60000, Math.floor((maxTs - minTs) / 150));
+        playTimer = setInterval(function() {
+            cur += step;
+            if (cur >= maxTs) { cur = maxTs; pause(); }
+            timeSlider.value = String(cur);
+            renderAtTime(cur);
+        }, 150);
+    }
+    function pause() {
+        isPlaying = false; playPauseBtn.textContent = 'Play';
+        if (playTimer) { clearInterval(playTimer); playTimer = null; }
+    }
+
+    async function fetchData() {
+        try {
+            statusDiv.textContent = 'Fetching new data...';
+            var url = WEB_APP_URL + '?t=' + Date.now();
+            var response = await fetch(url, { cache: 'no-store' });
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            var data = await response.json();
+
+            processServerData(data);
+            
+            if (allFeatures.length > 0 && !map.getBounds().contains(L.latLng(allFeatures[0].geometry.coordinates[1], allFeatures[0].geometry.coordinates[0]))) {
+                 var coords = allFeatures.map(function(f) { return [f.geometry.coordinates[1], f.geometry.coordinates[0]]; });
+                 var bounds = L.latLngBounds(coords);
+                 if (bounds.isValid()) { map.fitBounds(bounds.pad(0.1)); }
             }
+            
+            applyDateFilter();
+        } catch (error) {
+            console.error('Failed to fetch map data:', error);
+            statusDiv.textContent = 'Error loading data.';
         }
+    }
 
-        // Events --------------------------------------------------------------
-        map.on('zoomend', () => {
-            handleCountyVisibility();
-            renderAtTime(currentTimeMs);
-        });
-
-        presetSel.addEventListener('change', () => {
-            const isCustom = presetSel.value === 'custom';
-            startDateInput.disabled = !isCustom;
-            endDateInput.disabled = !isCustom;
-            applyRangeBtn.disabled = !isCustom;
-            if (!isCustom) applyDateFilter();
-        });
-
-        applyRangeBtn.addEventListener('click', () => applyDateFilter());
-
-        timeSlider.addEventListener('input', () => {
-            if (map.getZoom() <= CLUSTER_UNTIL_ZOOM) map.setZoom(CLUSTER_UNTIL_ZOOM + 1); // smoother during scrub
-            renderAtTime(Number(timeSlider.value));
-        });
-
-        let playTimer = null;
-        function play() {
-            if (isPlaying) return;
-            isPlaying = true; playPauseBtn.textContent = 'Pause';
-            if (map.getZoom() <= CLUSTER_UNTIL_ZOOM) map.setZoom(CLUSTER_UNTIL_ZOOM + 1);
-
-            const minTs = Number(timeSlider.min);
-            const maxTs = Number(timeSlider.max);
-            let cur = Number(timeSlider.value);
-            const step = Math.max(60000, Math.floor((maxTs - minTs) / 150)); // ~150 frames
-
-            playTimer = setInterval(() => {
-                cur += step;
-                if (cur >= maxTs) { cur = maxTs; pause(); }
-                timeSlider.value = String(cur);
-                renderAtTime(cur);
-            }, 150);
-        }
-        function pause() {
-            isPlaying = false; playPauseBtn.textContent = 'Play';
-            if (playTimer) clearInterval(playTimer);
-            playTimer = null;
-        }
-        playPauseBtn.addEventListener('click', () => isPlaying ? pause() : play());
-
-        // Data fetch ----------------------------------------------------------
-        async function fetchData() {
-            try {
-                statusDiv.textContent = 'Fetching new data...';
-                const url = `${WEB_APP_URL}?limit=${HARD_LIMIT}&t=${Date.now()}`; // cache-buster + desired limit
-                const response = await fetch(url, { cache: 'no-store' });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json();
-
-                if (!data || !data.features || !Array.isArray(data.features)) {
-                    console.error('Unexpected response shape:', data);
-                    statusDiv.textContent = 'No data received (unexpected response).';
-                    return;
-                }
-
-                const feats = featuresFromServer(data);
-                allFeatures = feats;
-
-                // Initial fit to all data
-                if (allFeatures.length) {
-                    const coords = allFeatures.map(f => [f.geometry.coordinates[1], f.geometry.coordinates[0]]);
-                    const bounds = L.latLngBounds(coords);
-                    if (bounds.isValid()) map.fitBounds(bounds.pad(0.1));
-                }
-
-                applyDateFilter(); // sets filteredFeatures, dashboard, slider, and renders
-            } catch (error) {
-                console.error('Failed to fetch map data:', error);
-                statusDiv.textContent = 'Error loading data.';
-            }
-        }
-
-        // Start
-        fetchData();
-        setInterval(fetchData, REFRESH_INTERVAL_MS);
-        handleCountyVisibility(); // initial
-    </script>
+    // --- START ---
+    fetchData();
+    setInterval(fetchData, REFRESH_INTERVAL_MS);
+    handleCountyVisibility();
+</script>
 </body>
 </html>
