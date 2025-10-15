@@ -1,1 +1,232 @@
-<!DOCTYPE html><html> <head> <title>Field Data Monitor</title> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- Leaflet --> <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" /> <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script> <style> body { margin: 0; padding: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; } #map { height: 100vh; width: 100%; } .info-panel { position: absolute; top: 10px; right: 10px; z-index: 1000; background: white; padding: 10px; border-radius: 6px; box-shadow: 0 0 15px rgba(0,0,0,0.15); font-size: 14px; } .playbar { position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px; z-index: 1000; background: white; padding: 8px 12px; border-radius: 6px; box-shadow: 0 0 15px rgba(0,0,0,0.15); display: flex; gap: 10px; align-items: center; } .playbar button { background: #4f46e5; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; } .playbar button:hover { background: #4338ca; } </style></head> <body> <div id="map"></div> <div class="info-panel"> <strong>Live Field Map</strong> <div id="status">Loading data...</div> </div> <div class="playbar"> <button id="playBtn">Play</button> <span id="playStatus" style="font-size:12px;color:#333;"></span> </div> <script> // Show unexpected errors in the status window.addEventListener('error', function(e){ var msg = 'Script error: ' + (e && e.message ? e.message : 'unknown'); console.error(msg, e); var s = document.getElementById('status'); if (s) s.textContent = msg; }); window.addEventListener('unhandledrejection', function(e){ var msg = 'Promise error: ' + (e && e.reason ? e.reason : 'unknown'); console.error(msg, e); var s = document.getElementById('status'); if (s) s.textContent = msg; }); // --- CONFIGURATION --- var WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec'; var REFRESH_INTERVAL_MS = 30000; // auto refresh every 30s (paused during playback) var BASE_DOT_COLOR = '#8A2BE2'; // base purple var NEWEST_DOT_COLOR = '#FF00FF'; // newest magenta var PLAY_TICK_MS = 50; // animation frame interval var PLAY_FRAMES_TARGET = 200; // total frames ~200 (controls total playback duration) // --- END CONFIGURATION --- // Map var map = L.map('map', { center: [40.0, -96.0], zoom: 4, preferCanvas: true }); var layersControl = L.control.layers(null, null, { position: 'bottomright' }).addTo(map); var cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' }).addTo(map); layersControl.addBaseLayer(cartoLight, 'Light (Carto)'); var satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles © Esri' }); layersControl.addBaseLayer(satellite, 'Satellite'); // UI var statusDiv = document.getElementById('status'); var playBtn = document.getElementById('playBtn'); var playStatus = document.getElementById('playStatus'); // Data / layers var allFeatures = []; // sorted by timestamp asc; each with _ts var pointsLayer = null; // L.geoJSON var didFitOnce = false; // Playback state var isPlaying = false; var playTimer = null; var playIndex = 0; var playChunk = 1; var autoTimer = null; // Helpers function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); } // Lerp between two hex colors (as ints) function lerpColorInt(a, b, amount) { var ar = (a >> 16) & 0xff, ag = (a >> 8) & 0xff, ab = a & 0xff; var br = (b >> 16) & 0xff, bg = (b >> 8) & 0xff, bb = b & 0xff; var rr = Math.round(ar + amount * (br - ar)); var rg = Math.round(ag + amount * (bg - ag)); var rb = Math.round(ab + amount * (bb - ab)); return '#' + ((1 << 24) + (rr << 16) + (rg << 8) + rb).toString(16).slice(1); } function isValidPointFeature(f) { if (!f || !f.geometry || f.geometry.type !== 'Point') return false; var c = f.geometry.coordinates; if (!c || c.length < 2) return false; var lon = Number(c[0]), lat = Number(c[1]); if (!isFinite(lat) || !isFinite(lon)) return false; if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false; return true; } function prepareFeatures(data) { var feats = (data && data.features && Array.isArray(data.features)) ? data.features : []; // parse ISO timestamp and validate feats = feats.map(function(f){ if (!isValidPointFeature(f)) return null; var tsStr = f.properties && f.properties.timestamp ? String(f.properties.timestamp) : null; var tsMs = tsStr ? Date.parse(tsStr) : NaN; if (!isFinite(tsMs)) return null; f.properties = Object.assign({}, f.properties, { _ts: tsMs }); return f; }).filter(function(x){ return x; }); // sort by time asc feats.sort(function(a,b){ return a.properties._ts - b.properties._ts; }); if (!feats.length) return feats; // precompute gradient color per feature for stable look var baseHex = parseInt(BASE_DOT_COLOR.slice(1), 16); var newHex = parseInt(NEWEST_DOT_COLOR.slice(1), 16); var minT = feats[0].properties._ts; var maxT = feats[feats.length - 1].properties._ts; var span = Math.max(1, maxT - minT); for (var i=0; i<feats.length; i++) { var t = clamp((feats[i].properties._ts - minT) / span, 0, 1); feats[i].properties._color = lerpColorInt(baseHex, newHex, t); } return feats; } function rebuildFullLayer(features) { if (pointsLayer) { map.removeLayer(pointsLayer); pointsLayer = null; } pointsLayer = L.geoJSON({ type: 'FeatureCollection', features: features }, { pointToLayer: function (feature, latlng) { return L.circleMarker(latlng, { radius: 6, stroke: false, fillColor: feature.properties._color || BASE_DOT_COLOR, fillOpacity: 0.9 }); }, onEachFeature: function (feature, layer) { var ts = new Date(feature.properties._ts).toLocaleString(); layer.bindPopup('<b>Timestamp:</b> ' + ts); } }).addTo(map); } function renderAll() { rebuildFullLayer(allFeatures); if (allFeatures.length && !didFitOnce) { var coords = allFeatures.map(function(f){ return [f.geometry.coordinates[1], f.geometry.coordinates[0]]; }); var bounds = L.latLngBounds(coords); if (bounds.isValid()) { map.fitBounds(bounds.pad(0.1)); didFitOnce = true; } } statusDiv.textContent = 'Updated: ' + new Date().toLocaleTimeString() + ' (' + allFeatures.length + ' points)'; } // Playback ------------------------------------------------------------ function startAutoRefresh() { if (autoTimer) clearInterval(autoTimer); autoTimer = setInterval(fetchData, REFRESH_INTERVAL_MS); } function stopAutoRefresh() { if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } } function startPlayback() { if (!allFeatures.length) { statusDiv.textContent = 'No data to play.'; return; } stopAutoRefresh(); // keep the view stable isPlaying = true; playBtn.textContent = 'Pause'; playStatus.textContent = 'Playing...'; // reset if finished if (playIndex >= allFeatures.length) playIndex = 0; // build empty layer and add points progressively if (pointsLayer) { map.removeLayer(pointsLayer); pointsLayer = null; } pointsLayer = L.geoJSON(null, { pointToLayer: function (feature, latlng) { return L.circleMarker(latlng, { radius: 6, stroke: false, fillColor: feature.properties._color || BASE_DOT_COLOR, fillOpacity: 0.9 }); }, onEachFeature: function (feature, layer) { var ts = new Date(feature.properties._ts).toLocaleString(); layer.bindPopup('<b>Timestamp:</b> ' + ts); } }).addTo(map); // fit once at start for the full set if (allFeatures.length && !didFitOnce) { var coords = allFeatures.map(function(f){ return [f.geometry.coordinates[1], f.geometry.coordinates[0]]; }); var bounds = L.latLngBounds(coords); if (bounds.isValid()) { map.fitBounds(bounds.pad(0.1)); didFitOnce = true; } } // compute chunk to hit ~PLAY_FRAMES_TARGET frames total var total = allFeatures.length; var chunk = Math.max(1, Math.floor(total / PLAY_FRAMES_TARGET)); playChunk = chunk; if (playTimer) clearInterval(playTimer); playTimer = setInterval(function(){ var added = 0; while (added < playChunk && playIndex < total) { pointsLayer.addData(allFeatures[playIndex]); playIndex++; added++; } playStatus.textContent = 'Playing ' + playIndex + ' / ' + total; if (playIndex >= total) { pausePlayback(true); // finished } }, PLAY_TICK_MS); } function pausePlayback(finished) { if (playTimer) clearInterval(playTimer); playTimer = null; isPlaying = false; playBtn.textContent = finished ? 'Replay' : 'Resume'; playStatus.textContent = finished ? 'Finished' : 'Paused'; startAutoRefresh(); // resume refresh when not playing } playBtn.addEventListener('click', function() { if (!isPlaying) startPlayback(); else pausePlayback(false); }); // Data fetch ---------------------------------------------------------- async function fetchData() { try { if (isPlaying) { // Keep playback smooth; skip refresh until paused/finished statusDiv.textContent = 'Playing... (refresh paused)'; return; } statusDiv.textContent = 'Fetching data...'; var url = WEB_APP_URL + '?t=' + Date.now(); var res = await fetch(url, { cache: 'no-store' }); if (!res.ok) throw new Error('HTTP ' + res.status); var data = await res.json(); if (!data || data.type !== 'FeatureCollection' || !Array.isArray(data.features)) { statusDiv.textContent = 'Unexpected response shape.'; console.error('Unexpected response:', data); return; } allFeatures = prepareFeatures(data); renderAll(); } catch (err) { console.error('Fetch error:', err); statusDiv.textContent = 'Error loading data.'; } } // Counties overlay (lazy) -------------------------------------------- var countiesLayer = null; var countiesLoaded = false; async function loadCountyBoundaries() { try { if (countiesLoaded) return; var response = await fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json'); var countiesData = await response.json(); countiesLayer = L.geoJSON(countiesData, { style: { color: "#888", weight: 1, opacity: 0.65, fillOpacity: 0 }, interactive: false }).addTo(map); layersControl.addOverlay(countiesLayer, 'US Counties'); countiesLoaded = true; } catch (e) { console.error('Could not load county boundaries:', e); } } loadCountyBoundaries(); // Start fetchData(); startAutoRefresh(); </script></body> </html>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Field Data Monitor</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        .info-panel, .playback-panel {
+            position: absolute; z-index: 1000;
+            background: white; padding: 10px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        .info-panel { top: 10px; right: 10px; }
+        
+        /* --- NEW: Playback Panel Styles --- */
+        .playback-panel {
+            bottom: 30px; left: 50%; transform: translateX(-50%);
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 12px;
+        }
+        .playback-panel button {
+            font-size: 14px; padding: 5px 10px; border-radius: 5px; border: 1px solid #ccc;
+            background-color: #f0f0f0; cursor: pointer;
+        }
+        .playback-panel button:hover { background-color: #e0e0e0; }
+        .playback-panel input[type="range"] {
+            width: 250px;
+        }
+        .playback-panel .time-label {
+            font-size: 12px; color: #555; min-width: 140px; text-align: center;
+        }
+        
+        /* Mobile adjustments */
+        @media (max-width: 600px) {
+            .playback-panel {
+                flex-wrap: wrap;
+                width: calc(100% - 40px);
+                bottom: 10px; left: 10px; transform: none;
+            }
+            .playback-panel input[type="range"] { width: 100%; order: 1; }
+            .playback-panel .time-label { order: 2; width: 100%; text-align: left; margin-top: 5px; }
+            .playback-panel .buttons { order: 3; }
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="info-panel">
+        <strong>Live Field Map</strong>
+        <div id="status">Loading data...</div>
+    </div>
+    
+    <!-- --- NEW: Playback Panel HTML --- -->
+    <div class="playback-panel" style="display: none;">
+        <div class="buttons">
+            <button id="playPauseBtn">▶ Play</button>
+            <button id="restartBtn">⟲ Restart</button>
+        </div>
+        <input type="range" id="timeSlider" min="0" max="100" value="0" step="1" />
+        <div class="time-label" id="timeLabel">--</div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec';
+        const REFRESH_INTERVAL_MS = 90000; // Note: animation will reset on refresh
+        const BASE_DOT_COLOR = '#8A2BE2'; 
+        const NEWEST_DOT_COLOR = '#FF00FF';
+        const ANIMATION_SPEED_MS = 25; // Lower is faster
+        // --- END CONFIGURATION ---
+
+        const map = L.map('map', { center: [40.0, -96.0], zoom: 4 });
+        const layersControl = L.control.layers(null, null, { position: 'bottomright' }).addTo(map);
+        
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' }).addTo(map);
+        
+        // --- NEW: Global state for animation ---
+        let allFeatures = [];
+        let pointsLayer = null;
+        let animationFrameId = null; // To control the play/pause loop
+        
+        const statusDiv = document.getElementById('status');
+        const playbackPanel = document.querySelector('.playback-panel');
+        const playPauseBtn = document.getElementById('playPauseBtn');
+        const restartBtn = document.getElementById('restartBtn');
+        const timeSlider = document.getElementById('timeSlider');
+        const timeLabel = document.getElementById('timeLabel');
+        
+        // --- DATA FETCHING (UNCHANGED CORE) ---
+        async function fetchData() {
+            try {
+                statusDiv.textContent = 'Fetching new data...';
+                const response = await fetch(WEB_APP_URL + '?t=' + Date.now());
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+
+                if (!data.features || data.features.length === 0) {
+                    statusDiv.textContent = 'No features found.'; return;
+                }
+
+                data.features.forEach(feature => {
+                    feature.properties.dateObject = new Date(feature.properties.timestamp);
+                });
+                data.features.sort((a, b) => a.properties.dateObject - b.properties.dateObject);
+                allFeatures = data.features;
+                
+                // Initialize the map with all points and prepare for animation
+                initializePlayback();
+                
+                if (map.getZoom() <= 4) {
+                    const bounds = L.geoJSON(allFeatures).getBounds();
+                    if(bounds.isValid()) map.fitBounds(bounds.pad(0.1));
+                }
+                statusDiv.textContent = `Ready: ${allFeatures.length} points loaded`;
+            } catch (error) {
+                console.error('Failed to fetch/process data:', error);
+                statusDiv.textContent = 'Error loading data.';
+            }
+        }
+        
+        // --- NEW: PLAYBACK AND RENDERING LOGIC ---
+        function initializePlayback() {
+            stopAnimation(); // Stop any existing animation
+            playbackPanel.style.display = 'flex';
+            
+            // Configure the slider
+            timeSlider.min = 0;
+            timeSlider.max = allFeatures.length - 1;
+            timeSlider.value = allFeatures.length - 1;
+
+            renderPoints(allFeatures.length); // Render all points initially
+        }
+        
+        function renderPoints(count) {
+            if (pointsLayer) { map.removeLayer(pointsLayer); }
+            
+            const visibleFeatures = allFeatures.slice(0, count);
+            if (visibleFeatures.length === 0) return;
+            
+            const minTime = allFeatures[0].properties.dateObject.getTime();
+            const maxTime = allFeatures[allFeatures.length - 1].properties.dateObject.getTime();
+            
+            pointsLayer = L.geoJSON(visibleFeatures, {
+                pointToLayer: (feature, latlng) => {
+                    let color = BASE_DOT_COLOR;
+                    const timeSpan = maxTime - minTime;
+                    if (timeSpan > 0) {
+                        const ageRatio = (feature.properties.dateObject.getTime() - minTime) / timeSpan;
+                        const baseHex = parseInt(BASE_DOT_COLOR.slice(1), 16);
+                        const newHex = parseInt(NEWEST_DOT_COLOR.slice(1), 16);
+                        color = lerpColor(baseHex, newHex, ageRatio);
+                    }
+                    return L.circleMarker(latlng, {
+                        radius: 6, stroke: false, fillColor: color, fillOpacity: 0.9
+                    });
+                },
+                onEachFeature: (feature, layer) => {
+                    const readableDate = feature.properties.dateObject.toLocaleString();
+                    layer.bindPopup(`<b>Timestamp:</b> ${readableDate}`);
+                }
+            }).addTo(map);
+
+            // Update the time label and slider position
+            const currentFeature = allFeatures[count - 1];
+            timeLabel.textContent = currentFeature.properties.dateObject.toLocaleString();
+            timeSlider.value = count - 1;
+        }
+
+        function playAnimation() {
+            playPauseBtn.textContent = '❚❚ Pause';
+            let currentIndex = Number(timeSlider.value);
+
+            function animate() {
+                currentIndex++;
+                if (currentIndex >= allFeatures.length) {
+                    stopAnimation();
+                    return;
+                }
+                renderPoints(currentIndex + 1);
+                animationFrameId = setTimeout(animate, ANIMATION_SPEED_MS);
+            }
+            animate();
+        }
+
+        function stopAnimation() {
+            if (animationFrameId) {
+                clearTimeout(animationFrameId);
+                animationFrameId = null;
+            }
+            playPauseBtn.textContent = '▶ Play';
+        }
+
+        // --- EVENT LISTENERS ---
+        playPauseBtn.addEventListener('click', () => {
+            if (animationFrameId) {
+                stopAnimation();
+            } else {
+                playAnimation();
+            }
+        });
+
+        restartBtn.addEventListener('click', () => {
+            stopAnimation();
+            renderPoints(1); // Show only the first point
+        });
+        
+        timeSlider.addEventListener('input', () => {
+            stopAnimation();
+            const index = Number(timeSlider.value);
+            renderPoints(index + 1);
+        });
+        
+        // Unchanged Helper Functions
+        function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+        function lerpColor(a, b, amount) { 
+            const ar = a >> 16, ag = a >> 8 & 0xff, ab = a & 0xff, br = b >> 16, bg = b >> 8 & 0xff, bb = b & 0xff,
+                  rr = ar + amount * (br - ar), rg = ag + amount * (bg - ag), rb = ab + amount * (bb - ab);
+            return "#" + ((1 << 24) + (rr << 16) + (rg << 8) + rb | 0).toString(16).slice(1);
+        }
+
+        // We are not loading counties in this version to keep it clean.
+        // If you want them back, the function from the previous version can be added here.
+        
+        // --- START ---
+        fetchData();
+        setInterval(fetchData, REFRESH_INTERVAL_MS);
+    </script>
+</body>
+</html>
