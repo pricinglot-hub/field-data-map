@@ -1,161 +1,285 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Field Data Monitor</title>
+    <title>Field Data Dashboard</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Leaflet MarkerCluster CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    
     <style>
-        body { margin: 0; padding: 0; font-family: sans-serif; }
+        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; }
         #map { height: 100vh; width: 100%; }
-        .info-panel {
+        
+        .dashboard-panel {
             position: absolute;
             top: 10px;
-            right: 10px;
+            left: 10px;
             z-index: 1000;
-            background: white;
-            padding: 10px;
-            border-radius: 5px;
-            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            width: 280px;
+            border: 1px solid #ddd;
         }
+        .dashboard-panel h3 { margin: 0 0 10px 0; }
+        .dashboard-stats p { margin: 5px 0; font-size: 14px; }
+        .dashboard-stats strong { color: #333; }
+        .dashboard-filters h4 { margin: 15px 0 5px 0; font-size: 15px; border-top: 1px solid #eee; padding-top: 10px; }
+        .filter-buttons { display: flex; gap: 5px; flex-wrap: wrap; }
+        .filter-buttons button {
+            flex-grow: 1;
+            padding: 6px 8px;
+            font-size: 12px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .filter-buttons button:hover { background-color: #e9e9e9; border-color: #999; }
+        .filter-buttons button.active {
+            background-color: #8A2BE2; /* Purple */
+            color: white;
+            border-color: #8A2BE2;
+            font-weight: bold;
+        }
+        #status { font-style: italic; color: #666; font-size: 12px; margin-top: 10px; }
     </style>
 </head>
 <body>
     <div id="map"></div>
-    <div class="info-panel">
-        <strong>Live Field Map</strong>
-        <div id="status">Loading data...</div>
+
+    <div class="dashboard-panel">
+        <h3>Dashboard</h3>
+        <div class="dashboard-stats">
+            <p>Total Points: <strong id="count-total">...</strong></p>
+            <p>Today's Points: <strong id="count-today">...</strong></p>
+            <p>Last Hour: <strong id="count-hour">...</strong></p>
+        </div>
+        <div class="dashboard-filters">
+            <h4>Filter by Time</h4>
+            <div class="filter-buttons">
+                <button id="filter-all" class="active">All Time</button>
+                <button id="filter-today">Today</button>
+                <button id="filter-2days">Last 2 Days</button>
+            </div>
+        </div>
+        <div id="status">Initializing...</div>
     </div>
-
-    <script>
-        // --- CONFIGURATION ---
-        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec'; // Paste your URL here
-        const REFRESH_INTERVAL_MS = 30000;
-        const dotColor = '#a855f7'; // purple
-        // --- END CONFIGURATION ---
-
-        // Render with Canvas for smoother performance
-        const canvasRenderer = L.canvas({ padding: 0.5 });
-
-        // Basemaps (default: Light)
-        const plainWhite = L.gridLayer({ attribution: '' });
-        plainWhite.createTile = function(coords) {
-            const tile = document.createElement('canvas');
-            tile.width = 256; tile.height = 256;
-            const ctx = tile.getContext('2d');
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, 256, 256);
-            return tile;
-        };
-
-        const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19, attribution: '© OpenStreetMap contributors'
-        });
-
-        const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-            maxZoom: 19, attribution: '© OpenStreetMap, © CARTO'
-        });
-
-        const dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            maxZoom: 19, attribution: '© OpenStreetMap, © CARTO'
-        });
-
-        const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            attribution: 'Tiles © Esri — Sources: Esri, USGS, USDA, etc.'
-        });
-
-        const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-            maxZoom: 17, attribution: '© OpenTopoMap (CC-BY-SA), © OpenStreetMap'
-        });
-
-        // Map (default to Light)
-        const map = L.map('map', {
-            center: [40.0, -96.0],
-            zoom: 4,
-            preferCanvas: true,
-            renderer: canvasRenderer,
-            layers: [cartoLight]
-        });
-
-        // Basemap switcher at bottom-right
-        const baseMaps = {
-            "Light (Carto)": cartoLight,
-            "Street (OSM)": osm,
-            "Plain White": plainWhite,
-            "Dark (Carto)": dark,
-            "Satellite (Esri)": satellite,
-            "Topo (OpenTopoMap)": topo
-        };
-        const layersControl = L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
-
-        let pointsLayer = null;
-        const statusDiv = document.getElementById('status');
-
-        // Smooth, borderless purple dots
-        function pointToDot(feature, latlng) {
-            return L.circleMarker(latlng, {
-                renderer: canvasRenderer,
-                radius: 6,
-                stroke: false,        // no border
-                fillColor: dotColor,  // purple
-                fillOpacity: 0.9
-            });
-        }
-
-        async function fetchData() {
-            try {
-                statusDiv.textContent = 'Fetching new data...';
-                const response = await fetch(WEB_APP_URL);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                const data = await response.json();
-
-                if (pointsLayer) {
-                    map.removeLayer(pointsLayer);
-                }
-
-                pointsLayer = L.geoJSON(data, {
-                    pointToLayer: pointToDot,
-                    onEachFeature: function (feature, layer) {
-                        const props = feature.properties;
-                        layer.bindPopup(`<b>Timestamp:</b> ${props.timestamp}`);
-                    }
-                }).addTo(map);
-
-                // Fit once on first load if you're at the starting zoom
-                if (map.getZoom() <= 4 && data.features.length > 0) {
-                    map.fitBounds(pointsLayer.getBounds().pad(0.1));
-                }
-
-                statusDiv.textContent = `Updated: ${new Date().toLocaleTimeString()} (${data.features.length} points)`;
-            } catch (error) {
-                console.error('Failed to fetch map data:', error);
-                statusDiv.textContent = 'Error loading data.';
-            }
-        }
-
-        // Optional: US county boundaries overlay (toggleable)
-        let countiesLayer;
-        async function loadCountyBoundaries() {
-            try {
-                const response = await fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json');
-                const countiesData = await response.json();
-
-                countiesLayer = L.geoJSON(countiesData, {
-                    style: { color: "#888", weight: 1, opacity: 0.65, fillOpacity: 0 },
-                    interactive: false
-                }).addTo(map);
-
-                layersControl.addOverlay(countiesLayer, 'US Counties');
-            } catch (error) {
-                console.error('Could not load county boundaries:', error);
-            }
-        }
-
-        // Start
-        fetchData();
-        setInterval(fetchData, REFRESH_INTERVAL_MS);
-        loadCountyBoundaries();
-    </script>
+    
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Leaflet MarkerCluster JS -->
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 </body>
 </html>
+<script>
+    // --- CONFIGURATION ---
+    const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec'; // Paste your URL here
+    const REFRESH_INTERVAL_MS = 60000; // Refresh every 60 seconds
+    const BASE_DOT_COLOR = '#8A2BE2'; // Base Purple
+    const NEWEST_DOT_COLOR = '#FF00FF'; // Highlight Magenta for newest points
+    const CLUSTER_DISABLE_ZOOM = 12; // Zoom level to disable clustering and show all dots
+    // --- END CONFIGURATION ---
+
+    // --- GLOBAL VARIABLES ---
+    let allGeoJsonData = null; // Store the master dataset
+    let pointsLayer = null;    // The main map layer (will be a marker cluster group)
+    let countiesLayer = null;  // The US counties layer
+    let activeFilter = 'all';  // The currently active filter
+
+    // --- MAP INITIALIZATION ---
+    const map = L.map('map', {
+        center: [40.0, -96.0],
+        zoom: 4,
+        preferCanvas: true // Important for performance with many markers
+    });
+
+    const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19, attribution: '© OpenStreetMap, © CARTO'
+    }).addTo(map);
+
+    // --- HELPER FUNCTIONS ---
+    // Function to blend between two colors (for the gradient)
+    function lerpColor(a, b, amount) { 
+        const ar = a >> 16, ag = a >> 8 & 0xff, ab = a & 0xff,
+              br = b >> 16, bg = b >> 8 & 0xff, bb = b & 0xff,
+              rr = ar + amount * (br - ar),
+              rg = ag + amount * (bg - ag),
+              rb = ab + amount * (bb - ab);
+        return "#" + ((1 << 24) + (rr << 16) + (rg << 8) + rb | 0).toString(16).slice(1);
+    }
+
+    // --- DATA FETCHING & PROCESSING ---
+    async function fetchData() {
+        document.getElementById('status').textContent = 'Fetching new data...';
+        try {
+            const response = await fetch(WEB_APP_URL);
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const data = await response.json();
+
+            // Optimization: Parse timestamps once and store them as Date objects
+            data.features.forEach(feature => {
+                feature.properties.date = new Date(feature.properties.timestamp);
+            });
+            
+            // Sort features from oldest to newest for color gradient calculation
+            data.features.sort((a, b) => a.properties.date - b.properties.date);
+
+            allGeoJsonData = data; // Store the full dataset
+            
+            updateDashboardStats();
+            updateMap(); // Render the map with the current active filter
+            document.getElementById('status').textContent = `Updated: ${new Date().toLocaleTimeString()}`;
+
+        } catch (error) {
+            console.error('Failed to fetch map data:', error);
+            document.getElementById('status').textContent = 'Error loading data.';
+        }
+    }
+
+    // --- UI & DASHBOARD UPDATES ---
+    function updateDashboardStats() {
+        if (!allGeoJsonData) return;
+        
+        const now = new Date();
+        const oneHourAgo = new Date(now.getTime() - (60 * 60 * 1000));
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+        let todayCount = 0;
+        let hourCount = 0;
+
+        allGeoJsonData.features.forEach(feature => {
+            if (feature.properties.date >= startOfToday) {
+                todayCount++;
+            }
+            if (feature.properties.date >= oneHourAgo) {
+                hourCount++;
+            }
+        });
+
+        document.getElementById('count-total').textContent = allGeoJsonData.features.length;
+        document.getElementById('count-today').textContent = todayCount;
+        document.getElementById('count-hour').textContent = hourCount;
+    }
+
+    // --- MAP RENDERING LOGIC ---
+    function updateMap() {
+        if (!allGeoJsonData) return;
+
+        // 1. Filter the data based on the active filter
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const twoDaysAgo = new Date(now.getTime() - (2 * 24 * 60 * 60 * 1000));
+
+        const filteredFeatures = allGeoJsonData.features.filter(feature => {
+            switch (activeFilter) {
+                case 'today':
+                    return feature.properties.date >= startOfToday;
+                case '2days':
+                    return feature.properties.date >= twoDaysAgo;
+                case 'all':
+                default:
+                    return true;
+            }
+        });
+        
+        // 2. Clear the old layer from the map
+        if (pointsLayer) {
+            map.removeLayer(pointsLayer);
+        }
+
+        // 3. Create the Marker Cluster group for Smart Rendering
+        pointsLayer = L.markerClusterGroup({
+            disableClusteringAtZoom: CLUSTER_DISABLE_ZOOM,
+            chunkedLoading: true, // Performance boost
+            maxClusterRadius: 60,
+            iconCreateFunction: function(cluster) {
+                return L.divIcon({
+                    html: `<b>${cluster.getChildCount()}</b>`,
+                    className: 'marker-cluster marker-cluster-small', // Use default styling
+                    iconSize: L.point(40, 40)
+                });
+            }
+        });
+        
+        // 4. Create the GeoJSON layer with custom styling
+        const minTime = filteredFeatures.length > 0 ? filteredFeatures[0].properties.date.getTime() : now.getTime();
+        const maxTime = filteredFeatures.length > 0 ? filteredFeatures[filteredFeatures.length - 1].properties.date.getTime() : now.getTime();
+        const timeSpan = maxTime - minTime;
+
+        const geoJsonLayer = L.geoJSON({ type: "FeatureCollection", features: filteredFeatures }, {
+            pointToLayer: function (feature, latlng) {
+                // Color Gradient Logic
+                let color = BASE_DOT_COLOR;
+                if (timeSpan > 0) {
+                    const featureTime = feature.properties.date.getTime();
+                    const ageRatio = (featureTime - minTime) / timeSpan; // 0 (oldest) to 1 (newest)
+                    const baseHex = parseInt(BASE_DOT_COLOR.slice(1), 16);
+                    const newHex = parseInt(NEWEST_DOT_COLOR.slice(1), 16);
+                    color = lerpColor(baseHex, newHex, ageRatio);
+                }
+                
+                return L.circleMarker(latlng, {
+                    radius: 6,
+                    stroke: false,
+                    fillColor: color,
+                    fillOpacity: 0.8
+                });
+            },
+            onEachFeature: function (feature, layer) {
+                layer.bindPopup(`<b>Timestamp:</b> ${feature.properties.timestamp}`);
+            }
+        });
+
+        // 5. Add the GeoJSON layer to the cluster group and the group to the map
+        pointsLayer.addLayer(geoJsonLayer);
+        map.addLayer(pointsLayer);
+    }
+    
+    // --- LAZY LOADING COUNTIES ---
+    function setupLazyCountyLoader() {
+        const loadCounties = () => {
+            if (map.getZoom() >= 4 && !countiesLayer) {
+                // Once loaded, we don't need the listener anymore
+                map.off('zoomend', loadCounties);
+                
+                fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json')
+                    .then(response => response.json())
+                    .then(countiesData => {
+                        countiesLayer = L.geoJSON(countiesData, {
+                            style: { color: "#999", weight: 1, opacity: 0.5, fillOpacity: 0 },
+                            interactive: false
+                        }).addTo(map);
+                    })
+                    .catch(error => console.error('Could not load county boundaries:', error));
+            }
+        };
+        map.on('zoomend', loadCounties);
+        loadCounties(); // Check on initial load too
+    }
+
+    // --- EVENT LISTENERS FOR FILTERS ---
+    const filterButtons = document.querySelectorAll('.filter-buttons button');
+    filterButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            // Update active class
+            filterButtons.forEach(btn => btn.classList.remove('active'));
+            button.classList.add('active');
+            
+            // Set active filter and update the map
+            activeFilter = button.id.split('-')[1]; // e.g., 'filter-today' -> 'today'
+            updateMap();
+        });
+    });
+
+    // --- START THE APPLICATION ---
+    fetchData();
+    setInterval(fetchData, REFRESH_INTERVAL_MS);
+    setupLazyCountyLoader();
+</script>
