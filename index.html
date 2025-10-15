@@ -15,7 +15,6 @@
         }
         .info-panel { top: 10px; right: 10px; }
         
-        /* --- NEW: Playback Panel Styles --- */
         .playback-panel {
             bottom: 30px; left: 50%; transform: translateX(-50%);
             display: flex; align-items: center; gap: 10px;
@@ -33,11 +32,9 @@
             font-size: 12px; color: #555; min-width: 140px; text-align: center;
         }
         
-        /* Mobile adjustments */
         @media (max-width: 600px) {
             .playback-panel {
-                flex-wrap: wrap;
-                width: calc(100% - 40px);
+                flex-wrap: wrap; width: calc(100% - 40px);
                 bottom: 10px; left: 10px; transform: none;
             }
             .playback-panel input[type="range"] { width: 100%; order: 1; }
@@ -53,7 +50,6 @@
         <div id="status">Loading data...</div>
     </div>
     
-    <!-- --- NEW: Playback Panel HTML --- -->
     <div class="playback-panel" style="display: none;">
         <div class="buttons">
             <button id="playPauseBtn">▶ Play</button>
@@ -66,10 +62,10 @@
     <script>
         // --- CONFIGURATION ---
         const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec';
-        const REFRESH_INTERVAL_MS = 90000; // Note: animation will reset on refresh
+        const REFRESH_INTERVAL_MS = 90000;
         const BASE_DOT_COLOR = '#8A2BE2'; 
         const NEWEST_DOT_COLOR = '#FF00FF';
-        const ANIMATION_SPEED_MS = 25; // Lower is faster
+        const ANIMATION_SPEED_MS = 20;
         // --- END CONFIGURATION ---
 
         const map = L.map('map', { center: [40.0, -96.0], zoom: 4 });
@@ -77,10 +73,10 @@
         
         L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' }).addTo(map);
         
-        // --- NEW: Global state for animation ---
         let allFeatures = [];
         let pointsLayer = null;
-        let animationFrameId = null; // To control the play/pause loop
+        let animationFrameId = null;
+        let countiesLayer = null; // --- ADDED: Variable for counties layer ---
         
         const statusDiv = document.getElementById('status');
         const playbackPanel = document.querySelector('.playback-panel');
@@ -89,7 +85,6 @@
         const timeSlider = document.getElementById('timeSlider');
         const timeLabel = document.getElementById('timeLabel');
         
-        // --- DATA FETCHING (UNCHANGED CORE) ---
         async function fetchData() {
             try {
                 statusDiv.textContent = 'Fetching new data...';
@@ -107,7 +102,6 @@
                 data.features.sort((a, b) => a.properties.dateObject - b.properties.dateObject);
                 allFeatures = data.features;
                 
-                // Initialize the map with all points and prepare for animation
                 initializePlayback();
                 
                 if (map.getZoom() <= 4) {
@@ -121,24 +115,25 @@
             }
         }
         
-        // --- NEW: PLAYBACK AND RENDERING LOGIC ---
         function initializePlayback() {
-            stopAnimation(); // Stop any existing animation
+            stopAnimation();
             playbackPanel.style.display = 'flex';
             
-            // Configure the slider
             timeSlider.min = 0;
             timeSlider.max = allFeatures.length - 1;
             timeSlider.value = allFeatures.length - 1;
 
-            renderPoints(allFeatures.length); // Render all points initially
+            renderPoints(allFeatures.length);
         }
         
         function renderPoints(count) {
             if (pointsLayer) { map.removeLayer(pointsLayer); }
             
             const visibleFeatures = allFeatures.slice(0, count);
-            if (visibleFeatures.length === 0) return;
+            if (visibleFeatures.length === 0) {
+                 timeLabel.textContent = '--';
+                 return;
+            }
             
             const minTime = allFeatures[0].properties.dateObject.getTime();
             const maxTime = allFeatures[allFeatures.length - 1].properties.dateObject.getTime();
@@ -163,7 +158,6 @@
                 }
             }).addTo(map);
 
-            // Update the time label and slider position
             const currentFeature = allFeatures[count - 1];
             timeLabel.textContent = currentFeature.properties.dateObject.toLocaleString();
             timeSlider.value = count - 1;
@@ -171,7 +165,11 @@
 
         function playAnimation() {
             playPauseBtn.textContent = '❚❚ Pause';
+            // --- FIX: If slider is at the end, restart before playing ---
             let currentIndex = Number(timeSlider.value);
+            if (currentIndex >= allFeatures.length - 1) {
+                currentIndex = 0;
+            }
 
             function animate() {
                 currentIndex++;
@@ -193,18 +191,13 @@
             playPauseBtn.textContent = '▶ Play';
         }
 
-        // --- EVENT LISTENERS ---
         playPauseBtn.addEventListener('click', () => {
-            if (animationFrameId) {
-                stopAnimation();
-            } else {
-                playAnimation();
-            }
+            if (animationFrameId) { stopAnimation(); } else { playAnimation(); }
         });
 
         restartBtn.addEventListener('click', () => {
             stopAnimation();
-            renderPoints(1); // Show only the first point
+            renderPoints(1);
         });
         
         timeSlider.addEventListener('input', () => {
@@ -213,7 +206,6 @@
             renderPoints(index + 1);
         });
         
-        // Unchanged Helper Functions
         function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
         function lerpColor(a, b, amount) { 
             const ar = a >> 16, ag = a >> 8 & 0xff, ab = a & 0xff, br = b >> 16, bg = b >> 8 & 0xff, bb = b & 0xff,
@@ -221,12 +213,26 @@
             return "#" + ((1 << 24) + (rr << 16) + (rg << 8) + rb | 0).toString(16).slice(1);
         }
 
-        // We are not loading counties in this version to keep it clean.
-        // If you want them back, the function from the previous version can be added here.
+        // --- ADDED: County boundaries function ---
+        async function loadCountyBoundaries() {
+            try {
+                const response = await fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json');
+                const countiesData = await response.json();
+                countiesLayer = L.geoJSON(countiesData, {
+                    style: { color: "#888", weight: 1, opacity: 0.65, fillOpacity: 0 },
+                    interactive: false
+                }).addTo(map);
+                // Add to the layer control so it can be toggled
+                layersControl.addOverlay(countiesLayer, 'US Counties');
+            } catch (error) {
+                console.error('Could not load county boundaries:', error);
+            }
+        }
         
         // --- START ---
         fetchData();
         setInterval(fetchData, REFRESH_INTERVAL_MS);
+        loadCountyBoundaries(); // --- ADDED: Call the function on start ---
     </script>
 </body>
 </html>
