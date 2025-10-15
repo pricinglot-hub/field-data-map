@@ -9,7 +9,7 @@
     <style>
         body { margin: 0; padding: 0; font-family: sans-serif; }
         #map { height: 100vh; width: 100%; }
-        .info-panel { position: absolute; top: 10px; right: 10px; z-index: 1000; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
+        .info-panel { position: absolute; top: 10px; right: 50px; /* Adjusted for layer control */ z-index: 1000; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
     </style>
 </head>
 <body>
@@ -21,18 +21,60 @@
 
     <script>
         // --- CONFIGURATION ---
-        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec'; // Paste the SAME URL here
-        const REFRESH_INTERVAL_MS = 30000; // Refresh every 30 seconds
+        const WEB_APP_URL = 'YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL'; // Paste your URL here
+        const REFRESH_INTERVAL_MS = 30000;
         // --- END CONFIGURATION ---
 
-        const map = L.map('map').setView([40.7128, -74.0060], 10); // Default view (e.g., NYC)
+        // --- NEW: Define multiple basemaps ---
+        const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        });
+
+        const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+	        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+        });
+
+        const dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+	        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        });
+        
+        const map = L.map('map', {
+            center: [40.7128, -98.0060], // Centered on the US
+            zoom: 4,
+            layers: [osm] // Set the default layer
+        });
+        
+        // --- NEW: Create layer control object ---
+        const baseMaps = {
+            "Street": osm,
+            "Satellite": satellite,
+            "Dark Mode": dark
+        };
+        L.control.layers(baseMaps).addTo(map);
+
         let pointsLayer = null;
         const statusDiv = document.getElementById('status');
 
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        }).addTo(map);
+        // --- NEW: GeoJSON options for styling points as dots ---
+        const geoJsonOptions = {
+            pointToLayer: function (feature, latlng) {
+                // This function creates a circle marker for each point
+                return L.circleMarker(latlng, {
+                    radius: 5,
+                    fillColor: "#ff7800", // Orange
+                    color: "#000",
+                    weight: 1,
+                    opacity: 1,
+                    fillOpacity: 0.8
+                });
+            },
+            onEachFeature: function (feature, layer) {
+                // This function adds the popup to our new circle markers
+                const props = feature.properties;
+                layer.bindPopup(`<b>Timestamp:</b> ${props.timestamp}`);
+            }
+        };
 
         async function fetchData() {
             try {
@@ -45,29 +87,47 @@
                     map.removeLayer(pointsLayer); // Clear old points
                 }
 
-                pointsLayer = L.geoJSON(data, {
-                    onEachFeature: function (feature, layer) {
-                        // Create a popup for each point
-                        const props = feature.properties;
-                        layer.bindPopup(`<b>Timestamp:</b> ${props.timestamp}`);
-                    }
-                }).addTo(map);
+                // --- MODIFIED: Use the new geoJsonOptions here ---
+                pointsLayer = L.geoJSON(data, geoJsonOptions).addTo(map);
                 
-                // If there are points, fit the map to their bounds
-                if (data.features.length > 0) {
-                    map.fitBounds(pointsLayer.getBounds().pad(0.1));
+                // Only fit bounds if it's the first data load, to avoid jarring zoom changes
+                if (map.getZoom() <= 4 && data.features.length > 0) {
+                     map.fitBounds(pointsLayer.getBounds().pad(0.1));
                 }
-
+               
                 statusDiv.textContent = `Updated: ${new Date().toLocaleTimeString()} (${data.features.length} points)`;
             } catch (error) {
                 console.error('Failed to fetch map data:', error);
                 statusDiv.textContent = 'Error loading data.';
             }
         }
+        
+        // --- NEW: Function to load county boundaries ---
+        async function loadCountyBoundaries() {
+            try {
+                // Using a publicly hosted, simplified GeoJSON file for US counties
+                const response = await fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json');
+                const countiesData = await response.json();
+                
+                const countyStyle = {
+                    "color": "#888",
+                    "weight": 1,
+                    "opacity": 0.65,
+                    "fillOpacity": 0
+                };
 
-        // Fetch data immediately and then set an interval to refresh
+                L.geoJSON(countiesData, { style: countyStyle }).addTo(map);
+            } catch (error) {
+                console.error('Could not load county boundaries:', error);
+            }
+        }
+
+        // Fetch points data immediately and then set an interval to refresh
         fetchData();
         setInterval(fetchData, REFRESH_INTERVAL_MS);
+
+        // --- NEW: Load the county boundaries once when the map starts ---
+        loadCountyBoundaries();
     </script>
 </body>
 </html>
