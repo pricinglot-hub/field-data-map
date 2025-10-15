@@ -9,7 +9,16 @@
     <style>
         body { margin: 0; padding: 0; font-family: sans-serif; }
         #map { height: 100vh; width: 100%; }
-        .info-panel { position: absolute; top: 10px; right: 10px; z-index: 1000; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
+        .info-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+        }
     </style>
 </head>
 <body>
@@ -23,68 +32,76 @@
         // --- CONFIGURATION ---
         const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec'; // Paste your URL here
         const REFRESH_INTERVAL_MS = 30000;
+        const dotColor = '#a855f7'; // purple
         // --- END CONFIGURATION ---
 
-        const plain = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-	        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-            subdomains: 'abcd',
-	        maxZoom: 20
-        });
+        // Render with Canvas for smoother performance
+        const canvasRenderer = L.canvas({ padding: 0.5 });
+
+        // Basemaps (default: Light)
+        const plainWhite = L.gridLayer({ attribution: '' });
+        plainWhite.createTile = function(coords) {
+            const tile = document.createElement('canvas');
+            tile.width = 256; tile.height = 256;
+            const ctx = tile.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, 256, 256);
+            return tile;
+        };
 
         const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            maxZoom: 19, attribution: '© OpenStreetMap contributors'
         });
 
-        const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-	        attribution: 'Tiles &copy; Esri &mdash; i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, and the GIS User Community'
-        });
-        
-        const terrain = L.tileLayer('https://stamen-tiles-{s}.a.ssl.fastly.net/terrain/{z}/{x}/{y}{r}.png', {
-	        attribution: 'Map tiles by <a href="http://stamen.com">Stamen Design</a>, <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a> &mdash; Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-	        subdomains: 'abcd',
-	        minZoom: 0,
-	        maxZoom: 18
+        const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 19, attribution: '© OpenStreetMap, © CARTO'
         });
 
         const dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-	        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            maxZoom: 19, attribution: '© OpenStreetMap, © CARTO'
         });
-        
-        const map = L.map('map', {
-            center: [40.7128, -98.0060],
-            zoom: 4,
-            layers: [plain] // Default is the light Carto map
-        });
-        
-        const baseMaps = {
-            "Plain": plain,
-            "Street": osm,
-            "Satellite": satellite,
-            "Terrain": terrain,
-            "Dark Mode": dark
-        };
 
-        L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
+        const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles © Esri — Sources: Esri, USGS, USDA, etc.'
+        });
+
+        const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+            maxZoom: 17, attribution: '© OpenTopoMap (CC-BY-SA), © OpenStreetMap'
+        });
+
+        // Map (default to Light)
+        const map = L.map('map', {
+            center: [40.0, -96.0],
+            zoom: 4,
+            preferCanvas: true,
+            renderer: canvasRenderer,
+            layers: [cartoLight]
+        });
+
+        // Basemap switcher at bottom-right
+        const baseMaps = {
+            "Light (Carto)": cartoLight,
+            "Street (OSM)": osm,
+            "Plain White": plainWhite,
+            "Dark (Carto)": dark,
+            "Satellite (Esri)": satellite,
+            "Topo (OpenTopoMap)": topo
+        };
+        const layersControl = L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
 
         let pointsLayer = null;
         const statusDiv = document.getElementById('status');
 
-        // --- UPDATED: New dot styling for a smooth, jelly-like look ---
-        const geoJsonOptions = {
-            pointToLayer: function (feature, latlng) {
-                return L.circleMarker(latlng, {
-                    radius: 5,
-                    fillColor: "#8A2BE2", // Purple
-                    weight: 0,           // No border
-                    fillOpacity: 0.7     // Jelly-like transparency
-                });
-            },
-            onEachFeature: function (feature, layer) {
-                const props = feature.properties;
-                layer.bindPopup(`<b>Timestamp:</b> ${props.timestamp}`);
-            }
-        };
+        // Smooth, borderless purple dots
+        function pointToDot(feature, latlng) {
+            return L.circleMarker(latlng, {
+                renderer: canvasRenderer,
+                radius: 6,
+                stroke: false,        // no border
+                fillColor: dotColor,  // purple
+                fillOpacity: 0.9
+            });
+        }
 
         async function fetchData() {
             try {
@@ -93,34 +110,49 @@
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const data = await response.json();
 
-                if (pointsLayer) { map.removeLayer(pointsLayer); }
-
-                pointsLayer = L.geoJSON(data, geoJsonOptions).addTo(map);
-                
-                if (map.getZoom() <= 4 && data.features.length > 0) {
-                     map.fitBounds(pointsLayer.getBounds().pad(0.1));
+                if (pointsLayer) {
+                    map.removeLayer(pointsLayer);
                 }
-               
+
+                pointsLayer = L.geoJSON(data, {
+                    pointToLayer: pointToDot,
+                    onEachFeature: function (feature, layer) {
+                        const props = feature.properties;
+                        layer.bindPopup(`<b>Timestamp:</b> ${props.timestamp}`);
+                    }
+                }).addTo(map);
+
+                // Fit once on first load if you're at the starting zoom
+                if (map.getZoom() <= 4 && data.features.length > 0) {
+                    map.fitBounds(pointsLayer.getBounds().pad(0.1));
+                }
+
                 statusDiv.textContent = `Updated: ${new Date().toLocaleTimeString()} (${data.features.length} points)`;
             } catch (error) {
                 console.error('Failed to fetch map data:', error);
                 statusDiv.textContent = 'Error loading data.';
             }
         }
-        
+
+        // Optional: US county boundaries overlay (toggleable)
+        let countiesLayer;
         async function loadCountyBoundaries() {
             try {
                 const response = await fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json');
                 const countiesData = await response.json();
-                
-                const countyStyle = { "color": "#888", "weight": 1, "opacity": 0.65, "fillOpacity": 0 };
 
-                L.geoJSON(countiesData, { style: countyStyle }).addTo(map);
+                countiesLayer = L.geoJSON(countiesData, {
+                    style: { color: "#888", weight: 1, opacity: 0.65, fillOpacity: 0 },
+                    interactive: false
+                }).addTo(map);
+
+                layersControl.addOverlay(countiesLayer, 'US Counties');
             } catch (error) {
                 console.error('Could not load county boundaries:', error);
             }
         }
 
+        // Start
         fetchData();
         setInterval(fetchData, REFRESH_INTERVAL_MS);
         loadCountyBoundaries();
