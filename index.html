@@ -9,7 +9,8 @@
     <style>
         body { margin: 0; padding: 0; font-family: sans-serif; }
         #map { height: 100vh; width: 100%; }
-        .info-panel { position: absolute; top: 10px; right: 50px; /* Adjusted for layer control */ z-index: 1000; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
+        /* Adjusted info-panel since layer control is moved */
+        .info-panel { position: absolute; top: 10px; right: 10px; z-index: 1000; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
     </style>
 </head>
 <body>
@@ -25,44 +26,60 @@
         const REFRESH_INTERVAL_MS = 30000;
         // --- END CONFIGURATION ---
 
-        // --- NEW: Define multiple basemaps ---
+        // --- UPDATED: Define more basemaps ---
+        const plain = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+	        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+	        maxZoom: 20
+        });
+
         const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
             attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         });
 
         const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-	        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+	        attribution: 'Tiles &copy; Esri &mdash; i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, and the GIS User Community'
+        });
+        
+        const terrain = L.tileLayer('https://stamen-tiles-{s}.a.ssl.fastly.net/terrain/{z}/{x}/{y}{r}.png', {
+	        attribution: 'Map tiles by <a href="http://stamen.com">Stamen Design</a>, <a href="http://creativecommons.org/licenses/by/3.0">CC BY 3.0</a> &mdash; Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+	        subdomains: 'abcd',
+	        minZoom: 0,
+	        maxZoom: 18
         });
 
         const dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 	        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
         });
         
+        // --- UPDATED: Set the default layer to 'plain' ---
         const map = L.map('map', {
             center: [40.7128, -98.0060], // Centered on the US
             zoom: 4,
-            layers: [osm] // Set the default layer
+            layers: [plain] // The default layer is now the plain white map
         });
         
-        // --- NEW: Create layer control object ---
+        // --- UPDATED: Create the layer control object and add new maps ---
         const baseMaps = {
+            "Plain": plain,
             "Street": osm,
             "Satellite": satellite,
+            "Terrain": terrain,
             "Dark Mode": dark
         };
-        L.control.layers(baseMaps).addTo(map);
+
+        // --- UPDATED: Add position option to move the control ---
+        L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
 
         let pointsLayer = null;
         const statusDiv = document.getElementById('status');
 
-        // --- NEW: GeoJSON options for styling points as dots ---
         const geoJsonOptions = {
             pointToLayer: function (feature, latlng) {
-                // This function creates a circle marker for each point
                 return L.circleMarker(latlng, {
                     radius: 5,
-                    fillColor: "#ff7800", // Orange
+                    fillColor: "#ff7800",
                     color: "#000",
                     weight: 1,
                     opacity: 1,
@@ -70,7 +87,6 @@
                 });
             },
             onEachFeature: function (feature, layer) {
-                // This function adds the popup to our new circle markers
                 const props = feature.properties;
                 layer.bindPopup(`<b>Timestamp:</b> ${props.timestamp}`);
             }
@@ -83,14 +99,10 @@
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const data = await response.json();
 
-                if (pointsLayer) {
-                    map.removeLayer(pointsLayer); // Clear old points
-                }
+                if (pointsLayer) { map.removeLayer(pointsLayer); }
 
-                // --- MODIFIED: Use the new geoJsonOptions here ---
                 pointsLayer = L.geoJSON(data, geoJsonOptions).addTo(map);
                 
-                // Only fit bounds if it's the first data load, to avoid jarring zoom changes
                 if (map.getZoom() <= 4 && data.features.length > 0) {
                      map.fitBounds(pointsLayer.getBounds().pad(0.1));
                 }
@@ -102,19 +114,12 @@
             }
         }
         
-        // --- NEW: Function to load county boundaries ---
         async function loadCountyBoundaries() {
             try {
-                // Using a publicly hosted, simplified GeoJSON file for US counties
                 const response = await fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json');
                 const countiesData = await response.json();
                 
-                const countyStyle = {
-                    "color": "#888",
-                    "weight": 1,
-                    "opacity": 0.65,
-                    "fillOpacity": 0
-                };
+                const countyStyle = { "color": "#888", "weight": 1, "opacity": 0.65, "fillOpacity": 0 };
 
                 L.geoJSON(countiesData, { style: countyStyle }).addTo(map);
             } catch (error) {
@@ -122,11 +127,8 @@
             }
         }
 
-        // Fetch points data immediately and then set an interval to refresh
         fetchData();
         setInterval(fetchData, REFRESH_INTERVAL_MS);
-
-        // --- NEW: Load the county boundaries once when the map starts ---
         loadCountyBoundaries();
     </script>
 </body>
