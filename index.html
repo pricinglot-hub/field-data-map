@@ -1,1 +1,363 @@
-<!DOCTYPE html><html> <head> <title>Field Data Monitor</title> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width, initial-scale=1"> <!-- Leaflet core --> <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" /> <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script> <!-- MarkerCluster --> <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" /> <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" /> <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script> <style> :root { --purple:#a855f7; } body { margin: 0; padding: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; } #map { height: 100vh; width: 100%; } .info-panel, .control-panel, .timeline { background: white; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.15); } .info-panel { position: absolute; top: 10px; right: 10px; z-index: 1000; padding: 10px 12px; min-width: 220px; } .info-panel strong { display: block; margin-bottom: 6px; } .stats { font-size: 13px; line-height: 1.5; color: #333; } .stats .row { display: flex; justify-content: space-between; } .stats .label { color: #666; } .stats .value { font-weight: 600; } .control-panel { position: absolute; top: 10px; left: 10px; z-index: 1000; padding: 10px 12px; font-size: 13px; } .control-panel .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; } .control-panel select, .control-panel input, .control-panel button { font-size: 13px; padding: 6px 8px; border-radius: 6px; border: 1px solid #ddd; } .control-panel button { background: #4f46e5; color: white; border: none; cursor: pointer; } .control-panel button:hover { background: #4338ca; } .timeline { position: absolute; left: 50%; transform: translateX(-50%); bottom: 58px; z-index: 1000; padding: 10px 12px; display: flex; gap: 10px; align-items: center; min-width: 360px; } .timeline button { background: #4f46e5; color: #fff; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; } .timeline button:hover { background: #4338ca; } .timeline input[type="range"] { width: 240px; } .timeline .time-label { font-size: 12px; color: #333; min-width: 100px; text-align: right; } /* Dots used inside clusters */ .dot { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 8px rgba(168, 85, 247, 0.35); } /* Purple cluster look */ .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large { background: rgba(168,85,247,0.25); } .marker-cluster div { background: var(--purple); color: #fff; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.25); } /* Mobile responsiveness */ @media (max-width: 768px) { .info-panel { right: 10px; left: 10px; min-width: 0; } .control-panel { left: 10px; right: 10px; } .timeline { bottom: 10px; width: calc(100% - 20px); min-width: 0; flex-wrap: wrap; gap: 8px; } .timeline input[type="range"] { width: 100%; } .timeline .time-label { width: 100%; text-align: left; } } </style></head> <body> <div id="map"></div> <!-- Mini dashboard --> <div class="info-panel"> <strong>Live Field Map</strong> <div id="status">Loading data...</div> <div class="stats" style="margin-top:8px;"> <div class="row"><div class="label">Last hour</div><div class="value" id="countHour">0</div></div> <div class="row"><div class="label">Today</div><div class="value" id="countToday">0</div></div> </div> </div> <!-- Filters --> <div class="control-panel"> <div class="row"> <label for="preset">Date Range:</label> <select id="preset"> <option value="all">All</option> <option value="today">Today</option> <option value="last2">Last 2 days</option> <option value="custom">Custom</option> </select> <input type="date" id="startDate" disabled /> <input type="date" id="endDate" disabled /> <button id="applyRange" disabled>Apply</button> </div> </div> <!-- Time slider --> <div class="timeline"> <button id="playPause">Play</button> <input type="range" id="timeSlider" min="0" max="100" value="100" step="1" /> <div class="time-label" id="timeLabel">--</div> </div> <script> // Display unexpected JS errors in the status panel window.addEventListener('error', function(e) { var msg = 'Script error: ' + (e && e.message ? e.message : 'unknown'); console.error(msg, e); var statusDiv = document.getElementById('status'); if (statusDiv) statusDiv.textContent = msg; }); // --- CONFIGURATION --- var WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec'; var REFRESH_INTERVAL_MS = 60000; var CLUSTER_UNTIL_ZOOM = 5; // cluster at low zoom var COUNTY_ZOOM_MAX = 6; // show counties at US-level zoom var HARD_LIMIT = 20000; // safety cap // --- END CONFIGURATION --- // Basemaps (default: Light) var plainWhite = L.gridLayer({ attribution: '' }); plainWhite.createTile = function() { var tile = document.createElement('canvas'); tile.width = 256; tile.height = 256; var ctx = tile.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, 256, 256); return tile; }; var osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' }); var cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' }); var dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' }); var satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles © Esri — sources: Esri, USGS, USDA, etc.' }); var topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: '© OpenTopoMap (CC-BY-SA), © OpenStreetMap' }); var map = L.map('map', { center: [40.0, -96.0], zoom: 4, preferCanvas: true, layers: [cartoLight] // default Light (Carto) }); var baseMaps = { "Light (Carto)": cartoLight, "Street (OSM)": osm, "Plain White": plainWhite, "Dark (Carto)": dark, "Satellite (Esri)": satellite, "Topo (OpenTopoMap)": topo }; L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map); // UI var statusDiv = document.getElementById('status'); var countHourEl = document.getElementById('countHour'); var countTodayEl = document.getElementById('countToday'); var presetSel = document.getElementById('preset'); var startDateInput = document.getElementById('startDate'); var endDateInput = document.getElementById('endDate'); var applyRangeBtn = document.getElementById('applyRange'); var timeSlider = document.getElementById('timeSlider'); var timeLabel = document.getElementById('timeLabel'); var playPauseBtn = document.getElementById('playPause'); // Data state var allFeatures = []; // all from server, with _ts var filteredFeatures = []; // after date-range filter var currentTimeMs = 0; var rangeStartMs = 0; var rangeEndMs = 0; var isPlaying = false; // Layers var dotsLayer = null; var clusterLayer = null; var usingCluster = false; // single declaration var countiesLayer = null; var countiesLoaded = false; // Helpers ------------------------------------------------------------- function startOfTodayMs() { var d = new Date(); d.setHours(0,0,0,0); return d.getTime(); } function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); } // Robust timestamp parser (ISO, dd/mm/yyyy HH:MM:SS, numeric epochs) function parseTimestamp(v) { if (v == null) return NaN; if (typeof v === 'number' && isFinite(v)) { if (v > 1e12) return v; // ms if (v > 1e9) return v * 1000; // s -> ms return NaN; } if (v instanceof Date) return v.getTime(); if (typeof v === 'string') { var s = v.trim(); // ISO if (/^\d{4}-\d{2}-\d{2}T/.test(s) || s.endsWith('Z')) { var t = Date.parse(s); if (!isNaN(t)) return t; } // dd/mm/yyyy HH:MM[:SS] var m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/); if (m) { var d = parseInt(m[1],10), mo = parseInt(m[2],10)-1, y = parseInt(m[3],10); var hh = parseInt(m[4]||'0',10), mi = parseInt(m[5]||'0',10), ss = parseInt(m[6]||'0',10); return new Date(y, mo, d, hh, mi, ss).getTime(); } // Fallback var t2 = Date.parse(s); if (!isNaN(t2)) return t2; } return NaN; } // Purple hue; vary lightness with recency (comma syntax for broad support) function colorForRecency(ts, minTs, maxTs) { var span = Math.max(1, maxTs - minTs); var ratio = clamp((ts - minTs) / span, 0, 1); // 0 old -> 1 new var hue = 270; // purple var sat = 85; var light = 85 - Math.round(40 * ratio); // 85% old -> 45% new return 'hsl(' + hue + ', ' + sat + '%, ' + light + '%)'; } function isValidPointFeature(f) { if (!f || !f.geometry || f.geometry.type !== 'Point') return false; var c = f.geometry.coordinates; if (!c || c.length < 2) return false; var lon = Number(c[0]), lat = Number(c[1]); if (!isFinite(lat) || !isFinite(lon)) return false; if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false; return true; } function featuresFromServer(data) { var feats = (data && data.features && Array.isArray(data.features)) ? data.features : []; feats = feats.map(function(f) { var props = f.properties || {}; var rawTs = (props.ts !== undefined && props.ts !== null) ? props.ts : (props.tsMs !== undefined && props.tsMs !== null) ? props.tsMs : props.timestamp; var tsMs = parseTimestamp(rawTs); if (!isFinite(tsMs)) return null; f.properties = Object.assign({}, props, { _ts: tsMs }); return f; }).filter(function(x){ return x && isValidPointFeature(x); }); feats.sort(function(a,b){ return a.properties._ts - b.properties._ts; }); return feats.slice(-HARD_LIMIT); } function updateDashboard(features) { var now = Date.now(); var lastHour = now - 3600 * 1000; var todayStart = startOfTodayMs(); var hourCount = features.filter(function(f){ return f.properties._ts >= lastHour; }).length; var todayCount = features.filter(function(f){ return f.properties._ts >= todayStart; }).length; countHourEl.textContent = hourCount.toLocaleString(); countTodayEl.textContent = todayCount.toLocaleString(); } function setupTimeSlider() { if (!filteredFeatures.length) { timeSlider.min = 0; timeSlider.max = 1; timeSlider.value = 1; timeLabel.textContent = '--'; return; } var minTs = filteredFeatures[0].properties._ts; var maxTs = filteredFeatures[filteredFeatures.length-1].properties._ts; var span = Math.max(1, maxTs - minTs); var step = Math.max(60000, Math.floor(span / 200)); // >= 1 minute timeSlider.min = String(minTs); timeSlider.max = String(maxTs); timeSlider.step = String(step); timeSlider.value = String(maxTs); currentTimeMs = maxTs; timeLabel.textContent = new Date(currentTimeMs).toLocaleString(); } function applyDateFilter() { var now = Date.now(); if (!allFeatures.length) { filteredFeatures = []; updateDashboard(filteredFeatures); setupTimeSlider(); renderAtTime(now, { force: true }); return; } var preset = presetSel.value; if (preset === 'today') { rangeStartMs = startOfTodayMs(); rangeEndMs = now; } else if (preset === 'last2') { rangeStartMs = now - 2 * 24 * 3600 * 1000; rangeEndMs = now; } else if (preset === 'custom') { var s = startDateInput.value ? new Date(startDateInput.value + 'T00:00:00').getTime() : null; var e = endDateInput.value ? new Date(endDateInput.value + 'T23:59:59').getTime() : null; var minTs = allFeatures[0].properties._ts; var maxTs = allFeatures[allFeatures.length-1].properties._ts; rangeStartMs = (s !== null) ? s : minTs; rangeEndMs = (e !== null) ? e : maxTs; } else { // 'all' rangeStartMs = allFeatures[0].properties._ts; rangeEndMs = allFeatures[allFeatures.length-1].properties._ts; } filteredFeatures = allFeatures.filter(function(f){ return f.properties._ts >= rangeStartMs && f.properties._ts <= rangeEndMs; }); updateDashboard(filteredFeatures); setupTimeSlider(); renderAtTime(rangeEndMs, { force: true }); } function buildDotsLayer(visible) { if (dotsLayer) { map.removeLayer(dotsLayer); dotsLayer = null; } var minTs = rangeStartMs, maxTs = currentTimeMs || rangeEndMs; dotsLayer = L.geoJSON({ type: 'FeatureCollection', features: visible }, { pointToLayer: function(feature, latlng) { var c = colorForRecency(feature.properties._ts, minTs, maxTs); return L.circleMarker(latlng, { radius: 6, stroke: false, fillColor: c, fillOpacity: 0.9, renderer: L.canvas({ padding: 0.5 }) }); }, onEachFeature: function(feature, layer) { var ts = new Date(feature.properties._ts).toLocaleString(); layer.bindPopup('<b>Timestamp:</b> ' + ts); } }).addTo(map); } function buildClusterLayer(visible) { if (clusterLayer) { map.removeLayer(clusterLayer); clusterLayer = null; } clusterLayer = L.markerClusterGroup({ showCoverageOnHover: false, spiderfyOnMaxZoom: true, maxClusterRadius: 60, disableClusteringAtZoom: CLUSTER_UNTIL_ZOOM + 1, iconCreateFunction: function(cluster) { var count = cluster.getChildCount(); var size = 'small'; if (count >= 100) size = 'large'; else if (count >= 20) size = 'medium'; return new L.DivIcon({ html: '<div><span>' + count + '</span></div>', className: 'marker-cluster marker-cluster-' + size, iconSize: new L.Point(40, 40) }); } }); var minTs = rangeStartMs, maxTs = currentTimeMs || rangeEndMs; for (var i=0; i<visible.length; i++) { var f = visible[i]; var coords = f.geometry && f.geometry.coordinates ? f.geometry.coordinates : null; if (!coords || coords.length < 2) continue; var lon = Number(coords[0]), lat = Number(coords[1]); if (!isFinite(lat) || !isFinite(lon)) continue; var c = colorForRecency(f.properties._ts, minTs, maxTs); var icon = L.divIcon({ className: '', html: '<div class="dot" style="background:'+ c +';"></div>', iconSize: [10,10] }); var m = L.marker([lat, lon], { icon: icon }); var ts = new Date(f.properties._ts).toLocaleString(); m.bindPopup('<b>Timestamp:</b> ' + ts); clusterLayer.addLayer(m); } clusterLayer.addTo(map); } function renderAtTime(tMs, opts) { opts = opts || {}; var zoom = map.getZoom(); if (!filteredFeatures.length) { if (dotsLayer) { map.removeLayer(dotsLayer); dotsLayer = null; } if (clusterLayer) { map.removeLayer(clusterLayer); clusterLayer = null; } statusDiv.textContent = 'No data in selected range.'; return; } currentTimeMs = tMs; timeLabel.textContent = new Date(currentTimeMs).toLocaleString(); var visible = filteredFeatures.filter(function(f){ return f.properties._ts <= currentTimeMs; }); var shouldCluster = !isPlaying && zoom <= CLUSTER_UNTIL_ZOOM; if (shouldCluster !== usingCluster || opts.force) { if (dotsLayer) { map.removeLayer(dotsLayer); dotsLayer = null; } if (clusterLayer) { map.removeLayer(clusterLayer); clusterLayer = null; } if (shouldCluster) buildClusterLayer(visible); else buildDotsLayer(visible); usingCluster = shouldCluster; } else { if (usingCluster) buildClusterLayer(visible); else buildDotsLayer(visible); } statusDiv.textContent = 'Updated: ' + new Date().toLocaleTimeString() + ' (' + visible.length.toLocaleString() + ' points)'; } // Lazy counties ------------------------------------------------------- async function ensureCountiesLoaded() { if (countiesLoaded) return; try { var response = await fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json'); var countiesData = await response.json(); countiesLayer = L.geoJSON(countiesData, { style: { color: "#888", weight: 1, opacity: 0.65, fillOpacity: 0 }, interactive: false }); countiesLoaded = true; } catch (e) { console.error('Could not load county boundaries:', e); } } async function handleCountyVisibility() { var z = map.getZoom(); if (z <= COUNTY_ZOOM_MAX) { await ensureCountiesLoaded(); if (countiesLayer && !map.hasLayer(countiesLayer)) countiesLayer.addTo(map); } else { if (countiesLayer && map.hasLayer(countiesLayer)) map.removeLayer(countiesLayer); } } // Events -------------------------------------------------------------- map.on('zoomend', function() { handleCountyVisibility(); renderAtTime(currentTimeMs); }); presetSel.addEventListener('change', function() { var isCustom = presetSel.value === 'custom'; startDateInput.disabled = !isCustom; endDateInput.disabled = !isCustom; applyRangeBtn.disabled = !isCustom; if (!isCustom) applyDateFilter(); }); applyRangeBtn.addEventListener('click', function(){ applyDateFilter(); }); timeSlider.addEventListener('input', function() { if (map.getZoom() <= CLUSTER_UNTIL_ZOOM) map.setZoom(CLUSTER_UNTIL_ZOOM + 1); // smoother during scrub renderAtTime(Number(timeSlider.value)); }); var playTimer = null; function play() { if (isPlaying) return; isPlaying = true; playPauseBtn.textContent = 'Pause'; if (map.getZoom() <= CLUSTER_UNTIL_ZOOM) map.setZoom(CLUSTER_UNTIL_ZOOM + 1); var minTs = Number(timeSlider.min); var maxTs = Number(timeSlider.max); var cur = Number(timeSlider.value); var step = Math.max(60000, Math.floor((maxTs - minTs) / 150)); // ~150 frames playTimer = setInterval(function() { cur += step; if (cur >= maxTs) { cur = maxTs; pause(); } timeSlider.value = String(cur); renderAtTime(cur); }, 150); } function pause() { isPlaying = false; playPauseBtn.textContent = 'Play'; if (playTimer) clearInterval(playTimer); playTimer = null; } playPauseBtn.addEventListener('click', function(){ if (isPlaying) pause(); else play(); }); // Data fetch ---------------------------------------------------------- async function fetchData() { try { statusDiv.textContent = 'Fetching new data...'; var url = WEB_APP_URL + '?limit=' + HARD_LIMIT + '&t=' + Date.now(); // cache-buster + limit var response = await fetch(url, { cache: 'no-store' }); if (!response.ok) throw new Error('HTTP ' + response.status); var data = await response.json(); if (!data || !data.features || !Array.isArray(data.features)) { console.error('Unexpected response shape:', data); statusDiv.textContent = 'No data received (unexpected response).'; return; } var feats = featuresFromServer(data); allFeatures = feats; // Initial fit to all data if (allFeatures.length) { var coords = allFeatures.map(function(f){ return [f.geometry.coordinates[1], f.geometry.coordinates[0]]; }); var bounds = L.latLngBounds(coords); if (bounds.isValid()) map.fitBounds(bounds.pad(0.1)); } applyDateFilter(); // sets filteredFeatures, dashboard, slider, and renders } catch (error) { console.error('Failed to fetch map data:', error); statusDiv.textContent = 'Error loading data.'; } } // Start fetchData(); setInterval(fetchData, REFRESH_INTERVAL_MS); handleCountyVisibility(); // initial </script></body> </html>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Field Data Monitor</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Leaflet core -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- MarkerCluster -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <style>
+        :root { --purple:#a855f7; }
+        body { margin: 0; padding: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        .info-panel, .control-panel, .timeline {
+            background: white; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.15);
+        }
+        .info-panel {
+            position: absolute; top: 10px; right: 10px; z-index: 1000;
+            padding: 10px 12px; min-width: 220px;
+        }
+        .info-panel strong { display: block; margin-bottom: 6px; }
+        .stats { font-size: 13px; line-height: 1.5; color: #333; }
+        .stats .row { display: flex; justify-content: space-between; }
+        .stats .label { color: #666; }
+        .stats .value { font-weight: 600; }
+        .control-panel {
+            position: absolute; top: 10px; left: 10px; z-index: 1000;
+            padding: 10px 12px; font-size: 13px;
+        }
+        .control-panel .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+        .control-panel select, .control-panel input, .control-panel button {
+            font-size: 13px; padding: 6px 8px; border-radius: 6px; border: 1px solid #ddd;
+        }
+        .control-panel button { background: #4f46e5; color: white; border: none; cursor: pointer; }
+        .control-panel button:hover { background: #4338ca; }
+        .timeline {
+            position: absolute; left: 50%; transform: translateX(-50%);
+            bottom: 58px; z-index: 1000;
+            padding: 10px 12px; display: flex; gap: 10px; align-items: center; min-width: 360px;
+        }
+        .timeline button {
+            background: #4f46e5; color: #fff; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer;
+        }
+        .timeline button:hover { background: #4338ca; }
+        .timeline input[type="range"] { width: 240px; }
+        .timeline .time-label { font-size: 12px; color: #333; min-width: 100px; text-align: right; }
+        .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large { background: rgba(168,85,247,0.25); }
+        .marker-cluster div {
+            background: var(--purple); color: #fff; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+        }
+        @media (max-width: 768px) {
+            .info-panel { right: 10px; left: 10px; min-width: 0; top: 70px; }
+            .control-panel { left: 10px; right: 10px; }
+            .timeline {
+                bottom: 10px; width: calc(100% - 20px); min-width: 0;
+                flex-wrap: wrap; gap: 8px;
+            }
+            .timeline input[type="range"] { width: 100%; }
+            .timeline .time-label { width: 100%; text-align: left; }
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="info-panel">
+        <strong>Live Field Map</strong>
+        <div id="status">Loading data...</div>
+        <div class="stats" style="margin-top:8px;">
+            <div class="row"><div class="label">Last hour</div><div class="value" id="countHour">0</div></div>
+            <div class="row"><div class="label">Today</div><div class="value" id="countToday">0</div></div>
+        </div>
+    </div>
+    <div class="control-panel">
+        <div class="row">
+            <label for="preset">Date Range:</label>
+            <select id="preset">
+                <option value="all">All</option>
+                <option value="today">Today</option>
+                <option value="last2">Last 2 days</option>
+                <option value="custom">Custom</option>
+            </select>
+            <input type="date" id="startDate" disabled />
+            <input type="date" id="endDate" disabled />
+            <button id="applyRange" disabled>Apply</button>
+        </div>
+    </div>
+    <div class="timeline">
+        <button id="playPause">Play</button>
+        <input type="range" id="timeSlider" min="0" max="100" value="100" step="1" />
+        <div class="time-label" id="timeLabel">--</div>
+    </div>
+
+<script>
+    // --- CONFIGURATION ---
+    const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZjjPHSKNNGJBJudDzshTc1XASWrMtDALSN5kwNOP7edELrv8eqh_r3hBcdCGgYUrFPQ/exec';
+    const REFRESH_INTERVAL_MS = 60000;
+    const CLUSTER_UNTIL_ZOOM = 5;
+    const COUNTY_ZOOM_MAX = 6;
+    const HARD_LIMIT = 20000;
+    // --- END CONFIGURATION ---
+
+    const map = L.map('map', { center: [40.0, -96.0], zoom: 4, preferCanvas: true });
+    
+    const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' }).addTo(map);
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' });
+    const dark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' });
+    const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles © Esri' });
+    const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: '© OpenTopoMap' });
+
+    const baseMaps = { "Light": cartoLight, "Street": osm, "Dark": dark, "Satellite": satellite, "Topo": topo };
+    L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map);
+
+    const statusDiv = document.getElementById('status');
+    const countHourEl = document.getElementById('countHour');
+    const countTodayEl = document.getElementById('countToday');
+    const presetSel = document.getElementById('preset');
+    const startDateInput = document.getElementById('startDate');
+    const endDateInput = document.getElementById('endDate');
+    const applyRangeBtn = document.getElementById('applyRange');
+    const timeSlider = document.getElementById('timeSlider');
+    const timeLabel = document.getElementById('timeLabel');
+    const playPauseBtn = document.getElementById('playPause');
+
+    let allFeatures = [];
+    let filteredFeatures = [];
+    let currentTimeMs = 0;
+    let rangeStartMs = 0;
+    let rangeEndMs = 0;
+    let isPlaying = false;
+    let playTimer = null;
+    let mainLayer = null;
+    let countiesLayer = null;
+    let countiesLoaded = false;
+
+    function startOfTodayMs() { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); }
+    function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+
+    function parseTimestamp(v) {
+        if (v == null) return NaN;
+        if (typeof v === 'number' && isFinite(v)) return v > 1e12 ? v : v * 1000;
+        if (v instanceof Date) return v.getTime();
+        if (typeof v === 'string') {
+            const s = v.trim();
+            // --- FIX: This regex now correctly handles the ", " separator ---
+            const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}),?\s+(\d{1,2}):(\d{2}):(\d{2})$/);
+            if (m) {
+                const d = parseInt(m[1], 10), mo = parseInt(m[2], 10) - 1, y = parseInt(m[3], 10);
+                const hh = parseInt(m[4], 10), mi = parseInt(m[5], 10), ss = parseInt(m[6], 10);
+                return new Date(y, mo, d, hh, mi, ss).getTime();
+            }
+            // Fallback for other formats like ISO
+            const t2 = Date.parse(s);
+            if (!isNaN(t2)) return t2;
+        }
+        return NaN;
+    }
+
+    function colorForRecency(ts, minTs, maxTs) {
+        const span = Math.max(1, maxTs - minTs);
+        const ratio = clamp((ts - minTs) / span, 0, 1);
+        const hue = 270, sat = 85, light = 85 - Math.round(40 * ratio);
+        return `hsl(${hue}, ${sat}%, ${light}%)`;
+    }
+
+    function processServerData(data) {
+        const feats = (data && data.features && Array.isArray(data.features)) ? data.features : [];
+        allFeatures = feats.map(f => {
+            if (!f || !f.properties || !f.geometry || !f.geometry.coordinates) return null;
+            const props = f.properties;
+            const rawTs = props.timestamp; // Directly use the 'timestamp' field from your data
+            const tsMs = parseTimestamp(rawTs);
+            if (!isFinite(tsMs)) {
+                console.warn('Could not parse timestamp:', rawTs);
+                return null;
+            }
+            f.properties._ts = tsMs;
+            return f;
+        }).filter(f => f !== null);
+
+        allFeatures.sort((a, b) => a.properties._ts - b.properties._ts);
+        
+        if (data.features.length > 0 && allFeatures.length === 0) {
+            console.error("CRITICAL: Data received, but all features were filtered out during parsing. Check timestamp format in your Google Sheet vs. the `parseTimestamp` function.");
+        }
+        
+        allFeatures = allFeatures.slice(-HARD_LIMIT);
+    }
+    
+    function applyDateFilter() {
+        const now = Date.now();
+        if (!allFeatures.length) {
+            filteredFeatures = [];
+        } else {
+            const preset = presetSel.value;
+            if (preset === 'today') {
+                rangeStartMs = startOfTodayMs(); rangeEndMs = now;
+            } else if (preset === 'last2') {
+                rangeStartMs = now - 2 * 24 * 3600 * 1000; rangeEndMs = now;
+            } else if (preset === 'custom') {
+                const s = startDateInput.value ? new Date(startDateInput.value + 'T00:00:00').getTime() : null;
+                const e = endDateInput.value ? new Date(endDateInput.value + 'T23:59:59').getTime() : null;
+                const minTs = allFeatures[0].properties._ts, maxTs = allFeatures[allFeatures.length - 1].properties._ts;
+                rangeStartMs = s !== null ? s : minTs;
+                rangeEndMs = e !== null ? e : maxTs;
+            } else { // 'all'
+                rangeStartMs = allFeatures[0].properties._ts;
+                rangeEndMs = allFeatures[allFeatures.length - 1].properties._ts;
+            }
+            filteredFeatures = allFeatures.filter(f => f.properties._ts >= rangeStartMs && f.properties._ts <= rangeEndMs);
+        }
+        updateDashboard(filteredFeatures);
+        setupTimeSlider();
+        renderAtTime(rangeEndMs);
+    }
+    
+    // --- REFACTORED: Simplified and robust rendering logic ---
+    function renderAtTime(tMs) {
+        currentTimeMs = tMs;
+        timeLabel.textContent = new Date(currentTimeMs).toLocaleString();
+
+        const visibleFeatures = filteredFeatures.filter(f => f.properties._ts <= currentTimeMs);
+
+        if (mainLayer) { map.removeLayer(mainLayer); }
+
+        if (visibleFeatures.length === 0) {
+            statusDiv.textContent = 'No data in selected range.';
+            return;
+        }
+
+        const minTs = rangeStartMs;
+        const maxTs = currentTimeMs || rangeEndMs;
+        
+        mainLayer = L.markerClusterGroup({
+            disableClusteringAtZoom: CLUSTER_UNTIL_ZOOM + 1,
+            chunkedLoading: true,
+            maxClusterRadius: 60,
+        });
+
+        const geoJsonLayer = L.geoJSON({ type: 'FeatureCollection', features: visibleFeatures }, {
+            pointToLayer: (feature, latlng) => {
+                const c = colorForRecency(feature.properties._ts, minTs, maxTs);
+                return L.circleMarker(latlng, {
+                    radius: 6, stroke: false, fillColor: c, fillOpacity: 0.9
+                });
+            },
+            onEachFeature: (feature, layer) => {
+                const ts = new Date(feature.properties._ts).toLocaleString();
+                layer.bindPopup(`<b>Timestamp:</b> ${ts}`);
+            }
+        });
+        
+        mainLayer.addLayer(geoJsonLayer);
+        map.addLayer(mainLayer);
+
+        statusDiv.textContent = `Updated: ${new Date().toLocaleTimeString()} (${visibleFeatures.length.toLocaleString()} points)`;
+    }
+
+    function updateDashboard(features) {
+        const now = Date.now(), lastHour = now - 3600 * 1000, todayStart = startOfTodayMs();
+        const hourCount = features.filter(f => f.properties._ts >= lastHour).length;
+        const todayCount = features.filter(f => f.properties._ts >= todayStart).length;
+        countHourEl.textContent = hourCount.toLocaleString();
+        countTodayEl.textContent = todayCount.toLocaleString();
+    }
+
+    function setupTimeSlider() {
+        if (!filteredFeatures.length) {
+            timeSlider.min = 0; timeSlider.max = 1; timeSlider.value = 1; timeLabel.textContent = '--';
+            return;
+        }
+        const minTs = filteredFeatures[0].properties._ts;
+        const maxTs = filteredFeatures[filteredFeatures.length - 1].properties._ts;
+        const span = Math.max(1, maxTs - minTs);
+        const step = Math.max(60000, Math.floor(span / 200));
+        timeSlider.min = String(minTs);
+        timeSlider.max = String(maxTs);
+        timeSlider.step = String(step);
+        timeSlider.value = String(maxTs);
+    }
+    
+    async function ensureCountiesLoaded() {
+        if (countiesLoaded) return;
+        try {
+            const response = await fetch('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json');
+            countiesLayer = L.geoJSON(await response.json(), {
+                style: { color: "#888", weight: 1, opacity: 0.65, fillOpacity: 0 },
+                interactive: false
+            });
+            countiesLoaded = true;
+        } catch (e) { console.error('Could not load county boundaries:', e); }
+    }
+    async function handleCountyVisibility() {
+        if (map.getZoom() <= COUNTY_ZOOM_MAX) {
+            await ensureCountiesLoaded();
+            if (countiesLayer && !map.hasLayer(countiesLayer)) countiesLayer.addTo(map);
+        } else {
+            if (countiesLayer && map.hasLayer(countiesLayer)) map.removeLayer(countiesLayer);
+        }
+    }
+
+    map.on('zoomend', handleCountyVisibility);
+    presetSel.addEventListener('change', () => {
+        const isCustom = presetSel.value === 'custom';
+        startDateInput.disabled = !isCustom; endDateInput.disabled = !isCustom; applyRangeBtn.disabled = !isCustom;
+        if (!isCustom) applyDateFilter();
+    });
+    applyRangeBtn.addEventListener('click', applyDateFilter);
+    timeSlider.addEventListener('input', () => renderAtTime(Number(timeSlider.value)));
+    playPauseBtn.addEventListener('click', () => isPlaying ? pause() : play());
+
+    function play() {
+        if (isPlaying) return;
+        isPlaying = true; playPauseBtn.textContent = 'Pause';
+        const minTs = Number(timeSlider.min), maxTs = Number(timeSlider.max);
+        let cur = Number(timeSlider.value) >= maxTs ? minTs : Number(timeSlider.value);
+        const step = Math.max(60000, Math.floor((maxTs - minTs) / 150));
+        playTimer = setInterval(() => {
+            cur += step;
+            if (cur >= maxTs) { cur = maxTs; pause(); }
+            timeSlider.value = String(cur);
+            renderAtTime(cur);
+        }, 150);
+    }
+    function pause() {
+        isPlaying = false; playPauseBtn.textContent = 'Play';
+        if (playTimer) { clearInterval(playTimer); playTimer = null; }
+    }
+
+    async function fetchData() {
+        let isInitialLoad = allFeatures.length === 0;
+        try {
+            statusDiv.textContent = 'Fetching new data...';
+            const url = `${WEB_APP_URL}?t=${Date.now()}`;
+            const response = await fetch(url, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+
+            processServerData(data);
+            
+            if (isInitialLoad && allFeatures.length > 0) {
+                 const coords = allFeatures.map(f => [f.geometry.coordinates[1], f.geometry.coordinates[0]]);
+                 const bounds = L.latLngBounds(coords);
+                 if (bounds.isValid()) { map.fitBounds(bounds.pad(0.1)); }
+            }
+            
+            applyDateFilter();
+        } catch (error) {
+            console.error('Failed to fetch map data:', error);
+            statusDiv.textContent = 'Error loading data.';
+        }
+    }
+
+    // --- START ---
+    fetchData();
+    setInterval(fetchData, REFRESH_INTERVAL_MS);
+    handleCountyVisibility();
+</script>
+</body>
+</html>
